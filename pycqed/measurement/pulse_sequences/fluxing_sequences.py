@@ -1,7 +1,7 @@
 import numpy as np
 from copy import deepcopy
 
-from pycqed.measurement.waveform_control.block import Block
+#from pycqed.measurement.waveform_control.block import Block
 
 try:
     from math import gcd
@@ -425,6 +425,68 @@ def fluxpulse_scope_sequence(
     pulses = [ge_pulse, flux_pulse, ro_pulse]
     swept_pulses = sweep_pulse_params(pulses,
                                       {'FPS_Flux.pulse_delay': -delays})
+
+    swept_pulses_with_prep = \
+        [add_preparation_pulses(p, operation_dict, [qb_name], **prep_params)
+         for p in swept_pulses]
+
+    seq = pulse_list_list_seq(swept_pulses_with_prep, seq_name, upload=False)
+
+    if cal_points is not None:
+        # add calibration segments
+        seq.extend(cal_points.create_segments(operation_dict, **prep_params))
+
+    log.debug(seq)
+    if upload:
+        ps.Pulsar.get_instance().program_awgs(seq)
+
+    return seq, np.arange(seq.n_acq_elements()), freqs
+
+
+def fluxpulse_amplitude_sequence(amplitudes,
+                                 freqs,
+                                 qb_name,
+                                 operation_dict,
+                                 cz_pulse_name,
+                                 delay,
+                                 cal_points=None,
+                                 prep_params=dict(),
+                                 upload=True):
+    '''
+    Performs X180 pulse on top of a fluxpulse
+    Timings of sequence
+       |          ----------           |X180|  ------------------------ |RO|
+       |          ---    | --------- fluxpulse ---------- |
+    '''
+
+    seq_name = 'Fluxpulse_amplitude_sequence'
+    ge_pulse = deepcopy(operation_dict['X180 ' + qb_name])
+    ge_pulse['name'] = 'FPA_Pi'
+    ge_pulse['element_name'] = 'FPA_Pi_el'
+
+    flux_pulse = deepcopy(operation_dict[cz_pulse_name])
+    flux_pulse['name'] = 'FPA_Flux'
+    flux_pulse['ref_pulse'] = 'FPA_Pi'
+    flux_pulse['ref_point'] = 'middle'
+
+    if delay is None:
+        delay = flux_pulse['pulse_length'] / 2
+
+    flux_pulse['pulse_delay'] = -flux_pulse.get('buffer_length_start',
+                                                0) - delay
+
+    ro_pulse = deepcopy(operation_dict['RO ' + qb_name])
+    ro_pulse['name'] = 'FPA_Ro'
+    ro_pulse['ref_pulse'] = 'FPA_Pi'
+    ro_pulse['ref_point'] = 'middle'
+
+
+    ro_pulse['pulse_delay'] = flux_pulse['pulse_length'] - delay + \
+                              flux_pulse.get('buffer_length_end', 0)
+
+    pulses = [ge_pulse, flux_pulse, ro_pulse]
+    swept_pulses = sweep_pulse_params(pulses,
+                                      {'FPA_Flux.amplitude': amplitudes})
 
     swept_pulses_with_prep = \
         [add_preparation_pulses(p, operation_dict, [qb_name], **prep_params)
