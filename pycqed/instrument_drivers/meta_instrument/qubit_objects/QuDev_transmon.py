@@ -3368,7 +3368,7 @@ class QuDev_transmon(Qubit):
         if label is None:
             label = 'Flux_amplitude_{}'.format(self.name)  #fix: uncomment when on live system
         MC = self.instr_mc.get_instr()
-        # self.prepare(drive='timedomain')
+        self.prepare(drive='timedomain')
 
         if cal_points:
             cal_states = CalibrationPoints.guess_cal_states(cal_states)

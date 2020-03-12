@@ -2544,7 +2544,7 @@ def measure_cphase(qbc, qbt, soft_sweep_params, cz_pulse_name,
         }
 
     for qb in [qbc, qbt]:
-        MC = qb.instr_mc.get_instr()
+        MC = qb.instr_mc.get_instr() # FIXME: why in loop?
         qb.prepare(drive='timedomain')
 
     if leakage_qb is None:
