@@ -129,18 +129,35 @@ def Ramsey_with_flux_pulse_meas_seq(thetas, qb, X90_separation, verbose=False,
         return seq_name
 
 
-def dynamic_phase_seq(qb_names, hard_sweep_dict_ramsey, operation_dict,
-                      cz_pulse_name,
-                      hard_sweep_dict_flux=None,
-                      cal_points=None, prepend_n_cz=0,
-                      upload=False, prep_params=dict(), prepend_pulse_dicts=None):
+def dynamic_phase_seq(qb_names, cz_pulse_name, hard_sweep_dict_ramsey,
+                      operation_dict, hard_sweep_dict_flux=None,
+                      cal_points=None, prepend_n_cz=0, prepend_pulse_dicts=None,
+                      prep_params=None, upload=False):
     '''
     Performs a Ramsey with interleaved Flux pulse
     Sequence
                    |fluxpulse|
         |X90|  -------------------     |X90|  ---  |RO|
                                      sweep phase
-    Optional: prepend n Flux pulses before starting ramsey
+
+    :param qb_names: (list) list of qubit names
+    :param cz_pulse_name: (str) name of the CZ pulse in the operation dict
+    :param hard_sweep_dict_ramsey: (dict) specifies the sweep information for
+        the hard sweep. If None, will default to
+            hard_sweep_params['phase'] = {
+                'values': np.tile(np.linspace(0, 2 * np.pi, 6) * 180 / np.pi, 2),
+                'unit': 'deg'}
+    :param operation_dict: (list) list of pulse dictionaries for all qubits
+        in qb_names
+    :param hard_sweep_dict_flux: (dict) same as hard_sweep_dict_ramsey
+        but for the flux pulse
+    :param cal_points: (CalibratinPoints object)
+    :param prepend_n_cz: (int) number of CZ gates to prepend to each segment
+    :param prepend_pulse_dicts: (list) list of pulse dictionaries to prepend
+        to each segment
+    :param prep_params: (dict) preparation parameters
+    :param upload: (bool) whether to upload to AWGs
+    :param kw: keyword arguments
     '''
 
     seq_name = 'Dynamic_phase_seq'
@@ -174,6 +191,8 @@ def dynamic_phase_seq(qb_names, hard_sweep_dict_ramsey, operation_dict,
         hard_sweep_dict_flux = {param_to_set: [flux_pulse[param_to_set]]}
     ro_pulses = generate_mux_ro_pulse_list(qb_names, operation_dict)
 
+    if prep_params is None:
+        prep_params = {}
     if prepend_pulse_dicts is None:
         prepend_pulse_dicts = {}
     pulse_list = []
@@ -557,12 +576,14 @@ def cz_bleed_through_phase_seq(phases, qb_name, CZ_pulse_name, CZ_separation,
 def cphase_seqs(qbc_name, qbt_name, hard_sweep_dict, soft_sweep_dict,
                 operation_dict, cz_pulse_name, num_cz_gates=1,
                 max_flux_length=None, cal_points=None, upload=True,
-                prep_params=dict(), prepend_pulse_dicts=None):
+                prep_params=None, prepend_pulse_dicts=None):
 
     assert num_cz_gates % 2 != 0
 
     seq_name = 'Cphase_sequence'
 
+    if prep_params is None:
+        prep_params = {}
     if prepend_pulse_dicts is None:
         prepend_pulse_dicts = {}
     prepend_pulses = []

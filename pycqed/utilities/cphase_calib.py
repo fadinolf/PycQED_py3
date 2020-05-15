@@ -1,10 +1,8 @@
-import numpy as np
-from numpy import array
-import lmfit
-import matplotlib.pyplot as plt
-import pycqed.analysis.measurement_analysis as ma
 from pycqed.analysis import analysis_toolbox as a_tools
-from scipy.interpolate import interp1d
+from pycqed.analysis_v2 import timedomain_analysis as tda
+import matplotlib.pyplot as plt
+import numpy as np
+import lmfit
 import sys
 from copy import deepcopy
 
@@ -126,20 +124,6 @@ def find_t_max_voltage(t, pe, init_guess_max=None, n=0, tol=0.1,
 
 def moving_average(x, w=2):
     return np.convolve(x, np.ones(w), 'valid') / w
-
-
-## cphase functions ##
-def ascending_phase_order(cphases_calib):
-    cphases_calib[cphases_calib < 0] += 2 * np.pi
-    cphases_calib[cphases_calib > 2 * np.pi] -= 2 * np.pi
-    pi_phase_idx = np.argmin(np.abs(cphases_calib - np.pi))
-    for ind in range(len(cphases_calib)):
-        if ind < pi_phase_idx and cphases_calib[ind] > cphases_calib[pi_phase_idx]:
-            cphases_calib[ind] -= 2 * np.pi
-        elif ind > pi_phase_idx and cphases_calib[ind] < cphases_calib[
-            pi_phase_idx]:
-            cphases_calib[ind] += 2 * np.pi
-    return cphases_calib
 
 
 ## dynamic phase functions ##
@@ -274,92 +258,6 @@ def get_amplitudes_to_measure(qbc, qbt, amplitude_range, cz_pulse_name,
                                                    max_spacing=kw.get('max_ampl_spacing', 0.0008))
     return ampl_to_measure
 
-#################### reloading parameter functions and build arb phase dict###
-def get_calib_dict(name=None):
-    import os
-    l = []
-    for file in os.listdir("."):
-        if file.startswith("carb_calib_ts_dict"):
-            print(os.path.join(file))
-            l.append(file)
-    if name is None and len(l)> 0:
-        name = l[-1]
-    print(f'Loading {name}')
-    return np.load(name, allow_pickle=True)[0]
-def save_calib_dict(calib_dict, name=None):
-    import datetime
-    if name is None:
-        name = "carb_calib_ts_dict_{:%Y%m%d_%H%M%S}.npy".format(datetime.datetime.now())
-    np.save(name, [calib_dict])
-
-def load_dyn_phase(timestamp, qb_names, plot=True):
-    f = a_tools.get_folder(timestamp=timestamp)
-    amplitudes = np.load(f + "\\amplitudes.npy")
-    dph_all = {}
-    if isinstance(qb_names, str):
-        qb_names = [qb_names]
-    for qbn in qb_names:
-        dph = np.load(f + f"\\dynamic_phases_{qbn}.npy")
-        if plot:
-            plt.scatter(amplitudes, np.unwrap(dph / 180 * np.pi) * 180 / np.pi,
-                     label=f"{qbn} measured", marker=".")
-            plt.xlabel("Amplitude")
-            plt.ylabel("Dynamic phase (deg.)")
-        dyn_phase_func_str = f"lambda ampl_test: interp1d({repr(amplitudes)}, " \
-                            f"{repr(np.unwrap(dph / 180 * np.pi) * 180 /np.pi)}, kind='cubic', fill_value='extrapolate' )(ampl_test)"
-        dph_all[qbn] = dyn_phase_func_str
-    return dph_all
-
-
-def load_cphase(timestamp, offset=None, remove=None):
-    a = ma.MeasurementAnalysis(timestamp=timestamp, auto=False)
-    a.get_naming_and_values()
-    ampl_calib = a.exp_metadata['soft_sweep_params']['amplitude']['values']
-    cphases_calib = np.array(
-        a.data_file['Analysis']["Processed data"]['analysis_params_dict'][
-            "cphase"]['val'])
-
-    # remove bad points
-    mask = np.ones_like(ampl_calib, dtype=bool)
-    if remove is not None:
-        mask[remove] = [False] * len(remove)
-        ampl_calib = ampl_calib[mask]
-        cphases_calib = cphases_calib[mask]
-
-    # clean discontinuities
-    cphases_calib[cphases_calib < 0] = cphases_calib[cphases_calib < 0] + 2 * np.pi
-    cphases_calib[cphases_calib > 2 * np.pi] = cphases_calib[
-                                                   cphases_calib > 2 * np.pi] - 2 * np.pi
-
-    # take first point as lowest point
-    cphases_calib[cphases_calib < cphases_calib[0]] = \
-        cphases_calib[cphases_calib  < cphases_calib[0]] + 2 * np.pi
-    pi_phase_idx = np.argmin(np.abs(cphases_calib - np.pi))
-    for ind in range(len(cphases_calib)):
-        if ind < pi_phase_idx and cphases_calib[ind] > cphases_calib[pi_phase_idx]:
-            cphases_calib[ind] -= 2 * np.pi
-        elif ind > pi_phase_idx and cphases_calib[ind] < cphases_calib[
-            pi_phase_idx]:
-            cphases_calib[ind] += 2 * np.pi
-    if offset is None:
-        offset = cphases_calib[0]
-    return ampl_calib, cphases_calib, offset
-
-def create_ampl_to_phase_func(ampl_calib, cphases_calib, offset):
-    arb_phase_amp_func = lambda target_phase: np.interp((target_phase - offset) % (2 * np.pi), cphases_calib - offset, ampl_calib)
-    arb_phase_amp_func_str = f"lambda target_phase: np.interp((target_phase - {offset}) % (2*np.pi), {repr( cphases_calib - offset)}, {repr(ampl_calib)}, period=2*np.pi)"
-    return arb_phase_amp_func_str
-
-def load_amplitude_func(timestamp, offset=None, remove=None):
-    a, ph, off = load_cphase(timestamp, offset=offset, remove=remove)
-    return create_ampl_to_phase_func(a, ph, off)
-
-def create_arb_phase_func(amplitude_function, dyn_phase_functions):
-    arb_phase_func_str = f"lambda target_phase: (({amplitude_function})(target_phase)," + "{"
-    for qbn, func in dyn_phase_functions.items():
-        arb_phase_func_str += f"'{qbn}': ({func})(({amplitude_function})(target_phase)),"
-    arb_phase_func_str += "})"
-    return arb_phase_func_str
 
 #############################################################################
 #                   CZ related
@@ -378,3 +276,84 @@ def update_cz_amplitude(qbc, qbt, phases, amplitudes, target_phase=np.pi,
     if update:
         qbc.set('upCZ_{}_amplitude'.format(qbt.name), new_ampl)
 
+
+def get_optimal_amp(qbc, qbt, soft_sweep_points, timestamp=None,
+                    classified_ro=False, tangent_fit=False):
+
+    if classified_ro:
+        channel_map = {qb.name: [vn + ' ' +
+                                 qb.instr_uhf() for vn in
+                                 qb.int_avg_classif_det.value_names]
+                       for qb in [qbc, qbt]}
+    else:
+        channel_map = {qb.name: [vn + ' ' +
+                                 qb.instr_uhf() for vn in
+                                 qb.int_avg_det.value_names]
+                       for qb in [qbc, qbt]}
+    tdma = tda.CPhaseLeakageAnalysis(
+        t_start=timestamp,
+        qb_names=[qbc.name, qbt.name],
+        options_dict={'TwoD': True, 'plot_all_traces': False,
+                      'plot_all_probs': False,
+                      'channel_map': channel_map})
+    cphases = tdma.proc_data_dict[
+        'analysis_params_dict']['cphase']['val']
+
+    sweep_pts = list(soft_sweep_points.values())[0]['values']
+    if tangent_fit:
+        fit_res = lmfit.Model(lambda x, m, b: m*np.tan(x/2-np.pi/2) + b).fit(
+            x=cphases, data=sweep_pts,
+            m=(max(sweep_pts)-min(sweep_pts))/((max(cphases)-min(cphases))),
+            b=np.min(sweep_pts))
+    else:
+        fit_res = lmfit.Model(lambda x, m, b: m*x + b).fit(
+            x=cphases, data=sweep_pts,
+            m=(max(sweep_pts)-min(sweep_pts))/((max(cphases)-min(cphases))),
+            b=np.min(sweep_pts))
+    plot_and_save_cz_amp_sweep(cphases=cphases, timestamp=timestamp,
+                               soft_sweep_params_dict=soft_sweep_points,
+                               fit_res=fit_res, save_fig=True, plot_guess=False,
+                               qbc_name=qbc.name, qbt_name=qbt.name)
+    return fit_res
+
+
+def plot_and_save_cz_amp_sweep(cphases, soft_sweep_params_dict, fit_res,
+                               qbc_name, qbt_name, save_fig=True, show=True,
+                               plot_guess=False, timestamp=None):
+
+    sweep_param_name = list(soft_sweep_params_dict)[0]
+    sweep_points = soft_sweep_params_dict[sweep_param_name]['values']
+    unit = soft_sweep_params_dict[sweep_param_name]['unit']
+    best_val = fit_res.model.func(np.pi, **fit_res.best_values)
+    fit_points_init = fit_res.model.func(cphases, **fit_res.init_values)
+    fit_points = fit_res.model.func(cphases, **fit_res.best_values)
+
+    fig, ax = plt.subplots()
+    ax.plot(cphases*180/np.pi, sweep_points, 'o-')
+    ax.plot(cphases*180/np.pi, fit_points, '-r')
+    if plot_guess:
+        ax.plot(cphases*180/np.pi, fit_points_init, '--k')
+    ax.hlines(best_val, cphases[0]*180/np.pi, cphases[-1]*180/np.pi)
+    ax.vlines(180, sweep_points.min(), sweep_points.max())
+    ax.set_ylabel('Flux pulse {} ({})'.format(sweep_param_name, unit))
+    ax.set_xlabel('Conditional phase (rad)')
+    ax.set_title('CZ {}-{}'.format(qbc_name, qbt_name))
+
+    ax.text(0.5, 0.95, 'Best {} = {:.6f} ({})'.format(
+        sweep_param_name, best_val*1e9 if unit=='s' else best_val, unit),
+            horizontalalignment='center', verticalalignment='top',
+            transform=ax.transAxes)
+    if save_fig:
+        import datetime
+        import os
+        fig_title = 'CPhase_amp_sweep_{}_{}'.format(qbc_name, qbt_name)
+        fig_title = '{}--{:%Y%m%d_%H%M%S}'.format(
+            fig_title, datetime.datetime.now())
+        if timestamp is None:
+            save_folder = a_tools.latest_data()
+        else:
+            save_folder = a_tools.get_folder(timestamp)
+        filename = os.path.abspath(os.path.join(save_folder, fig_title+'.png'))
+        fig.savefig(filename, bbox_inches='tight')
+    if show:
+        plt.show()
