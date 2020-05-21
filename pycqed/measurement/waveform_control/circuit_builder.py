@@ -1,3 +1,4 @@
+import numpy as np
 from copy import deepcopy
 from pycqed.measurement.waveform_control.block import Block
 from pycqed.measurement.waveform_control.sequence import Sequence
@@ -416,7 +417,10 @@ class CircuitBuilder:
         :param ro_kwargs: Keyword arguments (dict) for the function
             mux_readout().
         :param return_segments: whether to return segments or the sequence
-        :return: The created sequence
+        :return:
+            - if return_segments==True: list of segments and number of
+                1d sweep points
+            - else: sequence and np.arange(seq.n_acq_elements())
         """
         if ro_kwargs is None:
             ro_kwargs = {}
@@ -424,7 +428,7 @@ class CircuitBuilder:
         base_pulse_list = self.block_from_ops(
             'base_block', operations=operations, fill_values=fill_values,
             pulse_modifs=pulse_modifs).pulses
-        swept_pulses = sweep_points.sweep_pulse_params(base_pulse_list)
+        swept_pulses = sweep_points.sweep_pulse_params(base_pulse_list, 0)
 
         if return_segments:
             segments = []
@@ -432,7 +436,7 @@ class CircuitBuilder:
                 pulses = self.initialize(init_state=init_state).pulses + \
                          sp_pulse + self.mux_readout(**ro_kwargs).pulses
                 segments.append(Segment(f'Seg{i}', pulses))
-            return segments
+            return segments, len(sweep_points[0][next(iter(sweep_points[0]))][0])
         else:
             swept_pulses_all = [self.initialize(init_state=init_state).pulses +
                                 p + self.mux_readout(**ro_kwargs).pulses for
@@ -450,5 +454,79 @@ class CircuitBuilder:
             # repeat UHF seqZ code
             for qbn in ro_qubit_names:
                 seq.repeat_ro(f"RO {qbn}", self.operation_dict)
-            return seq
+            return seq, np.arange(seq.n_acq_elements())
+
+    def sweep_2d(self, operations, sweep_points, cal_points=None,
+                 fill_values=None, pulse_modifs=None, init_state='0',
+                 seq_name='Sequence', ro_kwargs=None, return_segments=False):
+        """
+        Returns a sequence or a list of segments with the given operations
+        using the function block_from_ops().
+        :param operations: list of operations (str), which can be preformatted
+            and later filled with values in the dictionary fill_values
+        :param fill_values: optional fill values for operations (dict),
+            see documentation of block_from_ops().
+        :param pulse_modifs: Modification of pulses parameters (dict),
+            see documentation of block_from_ops().
+        :param init_state: initialization state (string or list),
+            see documentation of initialize().
+        :param seq_name: Name (str) of the sequence (default: "Sequence")
+        :param ro_kwargs: Keyword arguments (dict) for the function
+            mux_readout().
+        :param return_segments: whether to return segments or the sequence
+        :return:
+            - if return_segments==True: list of segments, number of 1d and
+                number of 2d sweep points
+            - else: sequence, np.arange(sequences[0].n_acq_elements()), and
+                np.arange(nr_sp_2d)
+        """
+        if ro_kwargs is None:
+            ro_kwargs = {}
+
+        base_pulse_list = self.block_from_ops(
+            'base_block', operations=operations, fill_values=fill_values,
+            pulse_modifs=pulse_modifs).pulses
+        swept_pulses_2d = sweep_points.sweep_pulse_params(base_pulse_list, 1)
+
+        sp_dict = sweep_points[0]
+        nr_sp_1d = len(sp_dict[next(iter(sp_dict))][0])
+        sp_dict = sweep_points[1]
+        nr_sp_2d = len(sp_dict[next(iter(sp_dict))][0])
+        if return_segments:
+            segments = nr_sp_2d*['']
+            for j, sp_2d in enumerate(swept_pulses_2d):
+                swept_pulses_1d = sweep_points.sweep_pulse_params(sp_2d, 0)
+                segments_1d = nr_sp_1d*['']
+                for i, sp_pulse in enumerate(swept_pulses_1d):
+                    pulses = self.initialize(init_state=init_state).pulses + \
+                             sp_pulse + self.mux_readout(**ro_kwargs).pulses
+                    segments_1d[i] = Segment(f'Seg{j,i}', pulses)
+                segments[j] = segments_1d
+            return segments, nr_sp_1d, nr_sp_2d
+        else:
+            sequences = nr_sp_2d*['']
+            _, ro_qubit_names = self.get_qubits(ro_kwargs.get('qb_names',
+                                                              'all'))
+            for j, sp_2d in enumerate(swept_pulses_2d):
+                swept_pulses_1d = sweep_points.sweep_pulse_params(sp_2d, 0)
+                swept_pulses_1d_all = [
+                    self.initialize(init_state=init_state).pulses +
+                    p + self.mux_readout(**ro_kwargs).pulses for
+                    p in swept_pulses_1d]
+                seq = sq.pulse_list_list_seq(swept_pulses_1d_all,
+                                             f'{seq_name}{j}', upload=False)
+
+                if cal_points is not None:
+                    # add calibration segments
+                    seq.extend(cal_points.create_segments(
+                        self.operation_dict,
+                        **self.get_prep_params(ro_qubit_names)))
+                sequences[j] = seq
+
+            # repeat UHF seqZ code
+            for s in sequences:
+                for qbn in ro_qubit_names:
+                    s.repeat_ro(f"RO {qbn}", self.operation_dict)
+            return sequences,  np.arange(sequences[0].n_acq_elements()), \
+                   np.arange(nr_sp_2d)
 

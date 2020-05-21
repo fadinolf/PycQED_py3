@@ -82,14 +82,14 @@ class SweepPoints(list):
 
         return sweep_points_map
 
-    def sweep_pulse_params(self, base_pulse_list):
+    def sweep_pulse_params(self, base_pulse_list, sweep_dimension):
 
-        sp_1d = self[0]
+        sp_dict = self[sweep_dimension]
         swept_pulses = []
-        nr_sp = len(sp_1d[next(iter(sp_1d))][0])
+        nr_sp = len(sp_dict[next(iter(sp_dict))][0])
         for n in range(nr_sp):
             pulses_sp = deepcopy(base_pulse_list)
-            for name, sp_pars in sp_1d.items():
+            for name, sp_pars in sp_dict.items():
                 sp_vals = sp_pars[0]
                 pulse_name, param_name = name.split('.')
                 pulse_indices = [i for i, p in enumerate(base_pulse_list)
@@ -104,8 +104,9 @@ class SweepPoints(list):
                         prev_val = pulses_sp[p_idx][param_name]
                         sp_vals = sp_vals_func(self, prev_val)
                     if len(sp_vals) != nr_sp:
-                        raise ValueError('Entries in the first sweep dimension '
-                                         'are not all of the same length.')
+                        raise ValueError(
+                            f'Entries in sweep dimension {sweep_dimension}'
+                            f'are not all of the same length.')
                     pulses_sp[p_idx][param_name] = sp_vals[n]
             swept_pulses.append(pulses_sp)
         return swept_pulses
