@@ -1031,7 +1031,6 @@ def sweep_pulse_params(pulses, params):
                             f"{[p.get('name', 'No Name') for p in pulses]}")
             for p_idx in pulse_indices:
                 pulses_cp[p_idx][param_name] = sweep_values[i]
-                # pulses_cp[p_idx].pop('name', 0)
         swept_pulses.append(pulses_cp)
 
     return swept_pulses

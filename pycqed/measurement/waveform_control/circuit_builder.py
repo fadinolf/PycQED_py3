@@ -3,6 +3,7 @@ from pycqed.measurement.waveform_control.block import Block
 from pycqed.measurement.waveform_control.sequence import Sequence
 from pycqed.measurement.waveform_control.segment import Segment
 from pycqed.measurement import multi_qubit_module as mqm
+from pycqed.measurement.pulse_sequences import single_qubit_tek_seq_elts as sq
 
 
 class CircuitBuilder:
@@ -274,8 +275,8 @@ class CircuitBuilder:
             preparation_pulses += [block_end]
             return Block(block_name, preparation_pulses)
 
-    def mux_readout(self, qb_names='all', element_name='RO', ref_point='end',
-                    pulse_delay=0.0):
+    def mux_readout(self, qb_names='all', element_name='RO', **pulse_pars):
+
         block_name = "Readout"
         qubits, qb_names = self.get_qubits(qb_names)
         ro_pulses = []
@@ -284,8 +285,7 @@ class CircuitBuilder:
             ro_pulse['name'] = '{}_{}'.format(element_name, j)
             ro_pulse['element_name'] = element_name
             if j == 0:
-                ro_pulse['pulse_delay'] = pulse_delay
-                ro_pulse['ref_point'] = ref_point
+                ro_pulse.update(pulse_pars)
             else:
                 ro_pulse['ref_point'] = 'start'
             ro_pulses.append(ro_pulse)
@@ -373,7 +373,7 @@ class CircuitBuilder:
         return Segment(seg_name, pulses)
 
     def seq_from_ops(self, operations, fill_values=None,  pulse_modifs=None,
-                     init_state='0', seq_name='Sequence', ro_kwargs=None):
+                     init_state='0', seq_name='Sequence', ro_kwargs=None,):
         """
         Returns a sequence with the given operations using the function
         block_from_ops().
@@ -397,3 +397,58 @@ class CircuitBuilder:
                                   init_state=init_state,
                                   ro_kwargs=ro_kwargs))
         return seq
+
+    def sweep_1d(self, operations, sweep_points, cal_points=None,
+                 fill_values=None, pulse_modifs=None, init_state='0',
+                 seq_name='Sequence', ro_kwargs=None, return_segments=False):
+        """
+        Returns a sequence or a list of segments with the given operations
+        using the function block_from_ops().
+        :param operations: list of operations (str), which can be preformatted
+            and later filled with values in the dictionary fill_values
+        :param fill_values: optional fill values for operations (dict),
+            see documentation of block_from_ops().
+        :param pulse_modifs: Modification of pulses parameters (dict),
+            see documentation of block_from_ops().
+        :param init_state: initialization state (string or list),
+            see documentation of initialize().
+        :param seq_name: Name (str) of the sequence (default: "Sequence")
+        :param ro_kwargs: Keyword arguments (dict) for the function
+            mux_readout().
+        :param return_segments: whether to return segments or the sequence
+        :return: The created sequence
+        """
+        if ro_kwargs is None:
+            ro_kwargs = {}
+
+        base_pulse_list = self.block_from_ops(
+            'base_block', operations=operations, fill_values=fill_values,
+            pulse_modifs=pulse_modifs).pulses
+        swept_pulses = sweep_points.sweep_pulse_params(base_pulse_list)
+
+        if return_segments:
+            segments = []
+            for i, sp_pulse in enumerate(swept_pulses):
+                pulses = self.initialize(init_state=init_state).pulses + \
+                         sp_pulse + self.mux_readout(**ro_kwargs).pulses
+                segments.append(Segment(f'Seg{i}', pulses))
+            return segments
+        else:
+            swept_pulses_all = [self.initialize(init_state=init_state).pulses +
+                                p + self.mux_readout(**ro_kwargs).pulses for
+                                p in swept_pulses]
+            seq = sq.pulse_list_list_seq(swept_pulses_all, seq_name,
+                                         upload=False)
+            _, ro_qubit_names = self.get_qubits(ro_kwargs.get('qb_names',
+                                                              'all'))
+            if cal_points is not None:
+                # add calibration segments
+                seq.extend(cal_points.create_segments(
+                    self.operation_dict,
+                    **self.get_prep_params(ro_qubit_names)))
+
+            # repeat UHF seqZ code
+            for qbn in ro_qubit_names:
+                seq.repeat_ro(f"RO {qbn}", self.operation_dict)
+            return seq
+

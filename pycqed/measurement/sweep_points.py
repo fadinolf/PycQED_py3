@@ -1,7 +1,8 @@
 import logging
 log = logging.getLogger(__name__)
 from collections import OrderedDict
-
+from copy import deepcopy
+import numpy as np
 
 class SweepPoints(list):
     """
@@ -81,4 +82,30 @@ class SweepPoints(list):
 
         return sweep_points_map
 
+    def sweep_pulse_params(self, base_pulse_list):
 
+        sp_1d = self[0]
+        swept_pulses = []
+        nr_sp = len(sp_1d[next(iter(sp_1d))][0])
+        for n in range(nr_sp):
+            pulses_sp = deepcopy(base_pulse_list)
+            for name, sp_pars in sp_1d.items():
+                sp_vals = sp_pars[0]
+                pulse_name, param_name = name.split('.')
+                pulse_indices = [i for i, p in enumerate(base_pulse_list)
+                                 if pulse_name in p.get('name', "")]
+                if len(pulse_indices) == 0:
+                    raise ValueError(
+                        f"No pulse with name {pulse_name} found in list:"
+                        f"{[p.get('name', 'No Name') for p in base_pulse_list]}")
+                for p_idx in pulse_indices:
+                    if isinstance(sp_vals, str):
+                        sp_vals_func = eval(sp_vals)
+                        prev_val = pulses_sp[p_idx][param_name]
+                        sp_vals = sp_vals_func(self, prev_val)
+                    if len(sp_vals) != nr_sp:
+                        raise ValueError('Entries in the first sweep dimension '
+                                         'are not all of the same length.')
+                    pulses_sp[p_idx][param_name] = sp_vals[n]
+            swept_pulses.append(pulses_sp)
+        return swept_pulses

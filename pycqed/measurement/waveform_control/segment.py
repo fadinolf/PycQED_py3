@@ -972,6 +972,7 @@ class Segment:
                     a.set_prop_cycle(**prop_cycle)
             for i, instr in enumerate(wfs):
                 # plotting
+                ax[i, 0].set_title(instr)
                 for elem_name, v in wfs[instr].items():
                     for k, wf_per_ch in v.items():
                         for n_wf, (ch, wf) in enumerate(wf_per_ch.items()):
@@ -1015,7 +1016,9 @@ class Segment:
                     a.legend(loc=[1.02, 0], prop={'size': 8})
                 a.set_ylabel('Voltage (V)')
             ax[-1, 0].set_xlabel('time ($\mu$s)')
-            fig.suptitle(f'{self.name}')
+            fig.text(0.5, 1, f'{self.name}',
+                     horizontalalignment='center',
+                     verticalalignment='bottom')
             plt.tight_layout()
             if savefig:
                 plt.savefig(f'{self.name}.png')
