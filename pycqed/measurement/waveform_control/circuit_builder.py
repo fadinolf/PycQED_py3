@@ -49,7 +49,7 @@ class CircuitBuilder:
             return mqm.get_multi_qubit_prep_params(
                 [qb.preparation_params() for qb in qubits])
 
-    def get_cz_pulse_name(self, qubit1, qubit2):
+    def get_cz_gate_name(self, qubit1, qubit2):
         """
         Finds the name of the CZ gate between qubit1-qubit2 that exists in
         self.operation_dict.
@@ -98,7 +98,7 @@ class CircuitBuilder:
             p['basis_rotation'] = {qbn: float(angle)}
         elif 'CZ' in op:
             qba, qbb = op_info[1], op_info[2]
-            p = deepcopy(self.operation_dict[self.get_cz_pulse_name(qba, qbb)])
+            p = deepcopy(self.operation_dict[self.get_cz_gate_name(qba, qbb)])
         else:
             p = deepcopy(self.operation_dict[op])
         p['op_code'] = op
@@ -121,13 +121,13 @@ class CircuitBuilder:
             then it returns the max length in the swept lengths. If no, then
             returns pulse_length + buffers from the pulse dict.
         """
-        cz_pulse = self.get_pulse(self.get_cz_pulse_name(qubit1, qubit2))
+        cz_pulse = self.get_pulse(self.get_cz_gate_name(qubit1, qubit2))
         if sweep_points is None:
             cz_gate_duration = cz_pulse.get('pulse_length', 0)
         else:
             if len(sweep_points) > 1:
                 sweep_points = sweep_points[1]
-            cz_pulse_name = self.get_cz_pulse_name(qubit1, qubit2)
+            cz_pulse_name = self.get_cz_gate_name(qubit1, qubit2)
             cz_gate_duration = [max(v[0]) for k, v in sweep_points.items() if
                                 cz_pulse_name in k and 'pulse_length' in k]
             if len(cz_gate_duration) == 0:

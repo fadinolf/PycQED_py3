@@ -2430,11 +2430,11 @@ def measure_cphase_multi_gates(leakage_qubits, ramsey_qubits, sweep_points_2d,
     sp_2d_temp = deepcopy(sweep_points_2d)
     for qbl, qbr in zip(leakage_qubits, ramsey_qubits):
         for sp2d_name in sweep_points_2d[0]:
-            if CB.get_cz_pulse_name(qbl, qbr) in sp2d_name:
+            if CB.get_cz_gate_name(qbl, qbr) in sp2d_name:
                 sp_info = sp_2d_temp[0].pop(sp2d_name)
                 for n in range(num_cz_gates):
                     sp_2d_temp[0][
-                        f'{CB.get_cz_pulse_name(qbl, qbr)} {n+1}.'
+                        f'{CB.get_cz_gate_name(qbl, qbr)} {n+1}.'
                         f'{sp2d_name.split(".")[-1]}'] = sp_info
     sp += sp_2d_temp  # add the 2d SweepPoints to the 1d SweepPoints
 
@@ -2449,7 +2449,7 @@ def measure_cphase_multi_gates(leakage_qubits, ramsey_qubits, sweep_points_2d,
         # If not provided by the user, use CB.get_cz_gate_duration to get
         # total duration of each CZ gate
         cz_durations = {
-            CB.get_cz_pulse_name(q1, q2):
+            CB.get_cz_gate_name(q1, q2):
                 num_cz_gates*CB.get_max_cz_gate_duration(q1, q2, sp)
             for q1, q2 in zip(leakage_qubits, ramsey_qubits)}
     else:
@@ -2462,12 +2462,12 @@ def measure_cphase_multi_gates(leakage_qubits, ramsey_qubits, sweep_points_2d,
         for cz_name, p_len in max_flux_lengths.items()}
 
     # Define the list of measurement operations for one CZ gate
-    base_ops = ['X180 {qbl.name}', 'X90s {qbr.name}',
-                'upCZ {qbr.name} {qbl.name}',
-                'X180 {qbl.name}', 'X90s {qbr.name}']
+    base_ops = [repr('X180 {qbl.name}'), repr('X90s {qbr.name}')]
+    base_ops += num_cz_gates*['CB.get_cz_gate_name({qbr.name}, {qbl.name})']
+    base_ops += [repr('X180 {qbl.name}'), repr('X90s {qbr.name}')]
     # Replace qbl, qbr by the names of qubits in leakage_qubits, ramsey_qubits
     # len(ops) = len(base_ops) * len(leakage_qubits)
-    ops = [op.format(qbl=qbl, qbr=qbr) for qbl, qbr in
+    ops = [eval(op.format(qbl=qbl, qbr=qbr)) for qbl, qbr in
            zip(leakage_qubits, ramsey_qubits) for op in base_ops]
     # Get the list of NAMED pulses by creating a Block object
     pulses = CB.block_from_ops('B', ops).pulses
@@ -2515,7 +2515,7 @@ def measure_cphase_multi_gates(leakage_qubits, ramsey_qubits, sweep_points_2d,
     MC.set_sweep_points(hard_sweep_points)
     # Get AWGs channels of each flux pulse
     channels_to_upload = [
-        CB.operation_dict[CB.get_cz_pulse_name(q1, q2)]['channel'] for q1, q2 in
+        CB.operation_dict[CB.get_cz_gate_name(q1, q2)]['channel'] for q1, q2 in
         zip(leakage_qubits, ramsey_qubits)]
     # Create and assign soft sweep function
     MC.set_sweep_function_2D(awg_swf.SegmentSoftSweep(
@@ -2547,7 +2547,7 @@ def measure_cphase_multi_gates(leakage_qubits, ramsey_qubits, sweep_points_2d,
     data_to_fit.update({qb.name: 'pe' for qb in ramsey_qubits})
     exp_metadata.update({'leakage_qbnames': [qb.name for qb in leakage_qubits],
                          'cphase_qbnames': [qb.name for qb in ramsey_qubits],
-                         'preparation_params': prep_params,
+                         'preparation_params': CB.prep_params,
                          'cz_durations': cz_durations,
                          'cal_points': repr(cp),
                          'classified_ro': classified,
