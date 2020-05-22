@@ -983,24 +983,26 @@ class Segment:
                                     f"{instr}_{ch}"] - delays.get(instr, 0)
                                 if channel_map is None:
                                     # plot per device
-                                    ax[i, 0].plot(tvals * 1e6, wf,
-                                                  label=f"{elem_name[1]}_{k}_{ch}",
-                                                  **plot_kwargs)
+                                    ax[i, 0].plot(
+                                        tvals * 1e6, wf,
+                                        label=f"{elem_name[1]}_{k}_{ch}",
+                                        **plot_kwargs)
                                 else:
                                     # plot on each qubit subplot which includes
                                     # this channel in the channel map
                                     match = [i for i, (_, qb_chs) in
-                                                     enumerate(channel_map.items())
-                                                     if f"{instr}_{ch}" in qb_chs]
+                                             enumerate(channel_map.items())
+                                             if f"{instr}_{ch}" in qb_chs]
                                     for qbi in match:
-                                        ax[qbi, 0].plot(tvals * 1e6, wf,
-                                                      label=f"{elem_name[1]}_{k}_{ch}",
-                                                      **plot_kwargs)
+                                        ax[qbi, 0].plot(
+                                            tvals * 1e6, wf,
+                                            label=f"{elem_name[1]}_{k}_{ch}",
+                                            **plot_kwargs)
                                         if demodulate: # filling
-                                            ax[qbi, 0].fill_between(tvals * 1e6, wf,
-                                                            label=f"{elem_name[1]}_{k}_{ch}",
-                                                            alpha=0.05,
-                                                            **plot_kwargs)
+                                            ax[qbi, 0].fill_between(
+                                                tvals * 1e6, wf,
+                                                label=f"{elem_name[1]}_{k}_{ch}",
+                                                alpha=0.05, **plot_kwargs)
 
 
             # formatting

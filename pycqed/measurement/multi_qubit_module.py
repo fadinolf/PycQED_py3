@@ -21,6 +21,7 @@ import pycqed.measurement.pulse_sequences.fluxing_sequences as fsqs
 import pycqed.measurement.detector_functions as det
 from pycqed.measurement.sweep_points import SweepPoints
 from pycqed.measurement.calibration_points import CalibrationPoints
+from pycqed.measurement.waveform_control import circuit_builder as cb_mod
 from pycqed.analysis_v3.processing_pipeline import ProcessingPipeline
 from pycqed.measurement.waveform_control import pulsar as ps
 import pycqed.analysis.measurement_analysis as ma
@@ -2321,6 +2322,198 @@ def measure_cphase(qbc, qbt, soft_sweep_params, cz_pulse_name,
         return cphases, population_losses, leakage, flux_pulse_tdma
     else:
         return
+
+
+def measure_cphase_multi_gates(leakage_qubits, ramsey_qubits, sweep_points_2d,
+                               ro_qubits=None,
+                               max_flux_lengths=None, num_cz_gates=1,
+                               n_cal_points_per_state=1, cal_states='auto',
+                               prep_params=None, exp_metadata=None, label=None,
+                               analyze=True, upload=True, for_ef=True, **kw):
+    '''
+    method to measure the leakage and the phase acquired during a flux pulse
+    conditioned on the state of the control qubit (self).
+    In this measurement, the phase from two Ramsey type measurements
+    on qb_target is measured, once with the control qubit in the excited state
+    and once in the ground state. The conditional phase is calculated as the
+    difference.
+
+    Args:
+        qbc (QuDev_transmon): control qubit / fluxed qubit
+        qbt (QuDev_transmon): target qubit / non-fluxed qubit
+    '''
+    plot_all_traces = kw.get('plot_all_traces', True)
+    plot_all_probs = kw.get('plot_all_probs', True)
+    classified = kw.get('classified', False)
+    predictive_label = kw.pop('predictive_label', False)
+    ramsey_phases = kw.pop('ramsey_phases', None)
+
+    qubits = leakage_qubits + ramsey_qubits
+    if ro_qubits is None:
+        ro_qubits = qubits
+
+    if label is None:
+        if predictive_label:
+            label = 'Predictive_cphase_nz_measurement'
+        else:
+            label = 'CPhase_nz_measurement'
+        if classified:
+            label += '_classified'
+        if 'active' in prep_params['preparation_type']:
+            label += '_reset'
+        if num_cz_gates > 1:
+            label += f'_{num_cz_gates}_gates'
+        label += f'_{"".join([qb.name for qb in leakage_qubits])}_' \
+                 f'{"".join([qb.name for qb in ramsey_qubits])}'
+
+    if ramsey_phases is None:
+        ramsey_phases = np.linspace(0, 2*np.pi, 6)*180/np.pi
+    sp = SweepPoints()
+    sp.add_sweep_parameter(
+        'X90 qb3 2.phase', np.tile(ramsey_phases, 2),
+        'deg', 'Phase, $\\theta$')
+    sp.add_sweep_parameter(
+        'X90 qb4 2.phase', np.tile(ramsey_phases, 2),
+        'deg', 'Phase, $\\theta$')
+    sp.add_sweep_parameter(
+        'X180 qb1 1.amplitude',
+        'lambda sp, amp: amp*np.concatenate([np.ones(len(sp[0]['
+            '"X90 qb3 2.phase"][0])//2), np.zeros(len(sp[0]['
+            '"X90 qb3 2.phase"][0])//2)])',
+        'V', 'Amplitude, $A$')
+    sp.add_sweep_parameter(
+        'X180 qb1 2.amplitude',
+        'lambda sp, amp: amp*np.concatenate([np.ones(len(sp[0]['
+            '"X90 qb3 2.phase"][0])//2), np.zeros(len(sp[0]['
+            '"X90 qb3 2.phase"][0])//2)])',
+        'V', 'Amplitude, $A$')
+    sp.add_sweep_parameter(
+        'X180 qb2 1.amplitude',
+        'lambda sp, amp: amp*np.concatenate([np.ones(len(sp[0]['
+            '"X90 qb4 2.phase"][0])//2), np.zeros(len(sp[0]['
+            '"X90 qb4 2.phase"][0])//2)])',
+        'V', 'Amplitude, $A$')
+    sp.add_sweep_parameter(
+        'X180 qb2 2.amplitude',
+        'lambda sp, amp: amp*np.concatenate([np.ones(len(sp[0]['
+            '"X90 qb4 2.phase"][0])//2), np.zeros(len(sp[0]['
+            '"X90 qb4 2.phase"][0])//2)])',
+        'V', 'Amplitude, $A$')
+    sp += sweep_points_2d
+
+    cal_states = CalibrationPoints.guess_cal_states(cal_states,
+                                                    for_ef=for_ef)
+    cp = CalibrationPoints.multi_qubit([qb.name for qb in qubits], cal_states,
+                                       n_per_state=n_cal_points_per_state)
+
+    CB = cb_mod.CircuitBuilder(qubits)
+
+    for qb in qubits:
+        MC = qb.instr_mc.get_instr()
+        qb.prepare(drive='timedomain')
+
+    if max_flux_lengths is None:
+        cz_durations = {
+            CB.get_cz_pulse_name(q1, q2): CB.get_cz_gate_duration(q1, q2, sp)
+            for q1, q2 in zip(leakage_qubits, ramsey_qubits)}
+    else:
+        cz_durations = {
+            cz_name: p_len +
+                     CB.get_pulse(cz_name).get('buffer_length_start', 0) +
+                     CB.get_pulse(cz_name).get('buffer_length_end', 0)
+        for cz_name, p_len in max_flux_lengths.items()}
+
+    base_ops = ['X180 {ql.name}', 'X90s {qr.name}', 'upCZ {qr.name} {ql.name}',
+                'X180 {ql.name}', 'X90s {qr.name}']
+    ops = [op.format(ql=ql, qr=qr) for ql, qr in
+           zip(leakage_qubits, ramsey_qubits) for op in base_ops]
+    pulse_modifs = {i*len(base_ops): {"ref_pulse": "segment_start"}
+                    for i in range(len(ops)//len(base_ops))}
+    pulse_modifs.update({ops.index(czn): {"pulse_delay": d}
+                         for czn, d in cz_durations.items()})
+    max_dur_idx = np.argmax([
+        CB.get_ops_duration(ops[i*len(base_ops): (i+1)*len(base_ops)])
+        for i in range(len(ops)//len(base_ops))])
+    ro_ref_pulse = CB.get_pulse(
+        ops[max_dur_idx*len(base_ops): (max_dur_idx+1)*len(base_ops)][-1])[
+        'name']
+    sequences, hard_sweep_points, soft_sweep_points = \
+        CB.sweep_2d(ops, sp, cp, pulse_modifs=pulse_modifs,
+                    ro_kwargs={'ref_pulse': ro_ref_pulse,
+                               'qb_names': ro_qubits})
+
+    hard_sweep_func = awg_swf.SegmentHardSweep(sequence=sequences[0],
+                                               upload=upload,
+                                               parameter_name='Phase',
+                                               unit='deg')
+    MC.set_sweep_function(hard_sweep_func)
+    MC.set_sweep_points(hard_sweep_points)
+
+    channels_to_upload = [
+        CB.operation_dict[CB.get_cz_pulse_name(q1, q2)]['channel'] for q1, q2 in
+        zip(leakage_qubits, ramsey_qubits)]
+    MC.set_sweep_function_2D(awg_swf.SegmentSoftSweep(
+        hard_sweep_func, sequences,
+        next(iter(sp[1])).split('.')[1],
+        sp[1][next(iter(sp[1]))][1],
+        channels_to_upload=channels_to_upload))
+    MC.set_sweep_points_2D(soft_sweep_points)
+
+    det_get_values_kws = {'classified': classified,
+                          'correlated': False,
+                          'thresholded': True,
+                          'averaged': True}
+    det_name = 'int_avg{}_det'.format('_classif' if classified else '')
+    det_func = get_multiplexed_readout_detector_functions(
+        ro_qubits, nr_averages=max(qb.acq_averages() for qb in ro_qubits),
+        det_get_values_kws=det_get_values_kws)[det_name]
+    MC.set_detector_function(det_func)
+
+    if exp_metadata is None:
+        exp_metadata = {}
+    cal_states_rotations = {qb.name: {'g': 0, 'f': 1} for qb in leakage_qubits}
+    cal_states_rotations.update(
+        {qb.name: {'g': 0, 'e': 1} for qb in ramsey_qubits})
+    data_to_fit = {qb.name: 'pf' for qb in leakage_qubits}
+    data_to_fit.update({qb.name: 'pe' for qb in ramsey_qubits})
+    exp_metadata.update({'leakage_qbnames': [qb.name for qb in leakage_qubits],
+                         'cphase_qbnames': [qb.name for qb in ramsey_qubits],
+                         'preparation_params': prep_params,
+                         'cz_durations': cz_durations,
+                         'cal_points': repr(cp),
+                         'classified_ro': classified,
+                         'rotate': len(cal_states) != 0 and not classified,
+                         'cal_states_rotations': cal_states_rotations if
+                             (len(cal_states) != 0 and not classified) else None,
+                         'data_to_fit': data_to_fit,
+                         'sweep_points': sweep_points})
+    MC.run_2D(label, exp_metadata=exp_metadata)
+    if analyze:
+        if classified:
+            channel_map = {qb.name: [vn + ' ' +
+                                     qb.instr_uhf() for vn in
+                                     qb.int_avg_classif_det.value_names]
+                           for qb in qubits}
+        else:
+            channel_map = {qb.name: [vn + ' ' +
+                                     qb.instr_uhf() for vn in
+                                     qb.int_avg_det.value_names]
+                           for qb in qubits}
+        flux_pulse_tdma = tda.CPhaseLeakageAnalysis(
+            qb_names=[qb.name for qb in qubits],
+            options_dict={'TwoD': True, 'plot_all_traces': plot_all_traces,
+                          'plot_all_probs': plot_all_probs,
+                          'channel_map': channel_map})
+        cphases = flux_pulse_tdma.proc_data_dict[
+            'analysis_params_dict']['cphase']['val']
+        population_losses = flux_pulse_tdma.proc_data_dict[
+            'analysis_params_dict']['population_loss']['val']
+        leakage = flux_pulse_tdma.proc_data_dict[
+            'analysis_params_dict']['leakage']['val']
+        return cphases, population_losses, leakage, flux_pulse_tdma
+    else:
+        return
+
 
 def measure_arbitrary_phase(qbc, qbt, target_phases, phase_func, cz_pulse_name,
         soft_sweep_params=dict(), measure_dynamic_phase=False,

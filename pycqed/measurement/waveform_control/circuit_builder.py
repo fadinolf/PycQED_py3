@@ -49,6 +49,20 @@ class CircuitBuilder:
             return mqm.get_multi_qubit_prep_params(
                 [qb.preparation_params() for qb in qubits])
 
+    def get_cz_pulse_name(self, qubit1, qubit2):
+        if not hasattr(qubit1, '__iter__'):
+            qubit1 = qubit1.name
+        if not hasattr(qubit2, '__iter__'):
+            qubit2 = qubit2.name
+
+        if f"{self.cz_pulse_name} {qubit1} {qubit2}" in self.operation_dict:
+            return f"{self.cz_pulse_name} {qubit1} {qubit2}"
+        elif f"{self.cz_pulse_name} {qubit2} {qubit1}" in self.operation_dict:
+            return f"{self.cz_pulse_name} {qubit2} {qubit1}"
+        else:
+            raise KeyError(f'CZ gate "{self.cz_pulse_name} {qubit1} {qubit2}" '
+                           f'not found.')
+
     def get_pulse(self, op, parse_z_gate=False):
         """
         Gets a pulse from the operation dictionary, and possibly parses
@@ -75,20 +89,52 @@ class CircuitBuilder:
             angle, qbn = op_info[0][1:], op_info[1]
             p = self.get_pulse(f"Z180 {qbn}", parse_z_gate=False)
             p['basis_rotation'] = {qbn: float(angle)}
-        elif op.startswith("CZ"):
+        elif 'CZ' in op:
             qba, qbb = op_info[1], op_info[2]
-            if f"{self.cz_pulse_name} {qba} {qbb}" in self.operation_dict:
-                p = deepcopy(
-                    self.operation_dict[f"{self.cz_pulse_name} {qba} {qbb}"])
-            elif f"{self.cz_pulse_name} {qbb} {qba}" in self.operation_dict:
-                p = deepcopy(
-                    self.operation_dict[f"{self.cz_pulse_name} {qbb} {qba}"])
-            else:
-                raise KeyError(f'CZ gate "{self.cz_pulse_name} {qba} {qbb}" not found.')
+            p = deepcopy(self.operation_dict[self.get_cz_pulse_name(qba, qbb)])
         else:
             p = deepcopy(self.operation_dict[op])
         p['op_code'] = op
         return p
+
+    def get_cz_gate_duration(self, qubit1, qubit2, sweep_points=None):
+        cz_pulse = self.get_pulse(self.get_cz_pulse_name(qubit1, qubit2))
+        if sweep_points is None:
+            cz_gate_duration = cz_pulse.get('pulse_length', 0)
+        else:
+            if len(sweep_points) > 1:
+                sweep_points = sweep_points[1]
+            cz_pulse_name = self.get_cz_pulse_name(qubit1, qubit2)
+            cz_gate_duration = [max(v[0]) for k, v in sweep_points.items() if
+                                cz_pulse_name in k and 'pulse_length' in k]
+            if len(cz_gate_duration) == 0:
+                cz_gate_duration = cz_pulse.get('pulse_length', 0)
+            else:
+                cz_gate_duration = cz_gate_duration[0]
+        cz_gate_duration = cz_gate_duration + \
+                           cz_pulse.get('buffer_length_start', 0) + \
+                           cz_pulse.get('buffer_length_end', 0)
+        return cz_gate_duration
+
+    def get_ops_duration(self, operations, fill_values=None, pulse_modifs=None,
+                         init_state='0'):
+        pulses = self.initialize(init_state=init_state).build()
+        pulses += self.block_from_ops("Block1", operations,
+                                      fill_values=fill_values,
+                                      pulse_modifs=pulse_modifs).build()
+        seg = Segment('Segment 1', pulses)
+        seg.resolve_segment()
+        wfs = seg.waveforms()
+        duration = 0
+        for i, instr in enumerate(wfs):
+            for elem_name, v in wfs[instr].items():
+                for k, wf_per_ch in v.items():
+                    for n_wf, (ch, wf) in enumerate(wf_per_ch.items()):
+                        tvals = seg.tvals([
+                            f"{instr}_{ch}"], elem_name[1])[f"{instr}_{ch}"]
+                        duration = max(tvals) if max(tvals) > duration \
+                            else duration
+        return duration
 
     def swap_qubit_indices(self, i, j=None):
         """

@@ -21,6 +21,21 @@ class Block:
     def __init__(self, block_name, pulse_list:list):
         self.name = block_name
         self.pulses = deepcopy(pulse_list)
+        self.add_pulse_names()
+
+    def add_pulse_names(self):
+        pulse_types = []
+        for i in range(len(self.pulses)):
+            if 'op_code' in self.pulses[i] and \
+                    self.pulses[i]['pulse_type'] != 'VirtualPulse':
+                pulse_type = self.pulses[i]['op_code']
+                ref_point = self.pulses[i].get('ref_point', 'end')
+                if 's' in pulse_type and ref_point == 'start':
+                    pulse_type = pulse_type.replace('s', '')
+                idx = pulse_types.count(pulse_type)
+                pulse_types += [pulse_type]
+                if 'name' not in self.pulses[i]:
+                    self.pulses[i]['name'] = f'{pulse_type} {idx+1}'
 
     def build(self, ref_point="end", ref_point_new="start",
               ref_pulse='previous_pulse', block_delay=0, name=None,
