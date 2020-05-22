@@ -2337,9 +2337,9 @@ def measure_cphase_multi_gates(leakage_qubits, ramsey_qubits, sweep_points_2d,
     in the excited state and once in the ground state.
     The conditional phase is calculated as the difference.
 
-    ! The MUX ro happens simultaneously for all qubits, but the pulses are not
-    necessarily simultaneous for the qubits in the cz gates. This depends on
-    The total duration of each cz gate.
+    ! The MUX ro happens simultaneously for all qubits, but the other pulses
+    are not necessarily simultaneous. This depends on the total duration
+    of each cz gate.
 
     :param leakage_qubits: list of QuDev_transmon instances corresponding to the
         qubits that go to the |f> state during the cz interaction

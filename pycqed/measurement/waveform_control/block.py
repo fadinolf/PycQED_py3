@@ -24,6 +24,17 @@ class Block:
         self.add_pulse_names()
 
     def add_pulse_names(self):
+        """
+        Adds unique names to all the pulses in self.pulses based on the
+        op_code and the number of times this op_code has already occurred
+        in self.pulses.
+        For example: if the pulse list contains pulse dicts for the operations
+        ['X180 qb1', 'X90s qb3', 'upCZ qb3 qb1', 'upCZ qb3 qb1',
+        'X180 qb1', 'X90s qb3'],
+        then these pulses will have the names
+        ['X180 qb1 1', 'X90s qb3 1', 'upCZ qb3 qb1 1', 'upCZ qb3 qb1 2',
+        'X180 qb1 2', 'X90s qb3 2']. (s is removed)
+        """
         pulse_types = []
         for i in range(len(self.pulses)):
             if 'op_code' in self.pulses[i] and \
