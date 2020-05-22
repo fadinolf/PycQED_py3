@@ -2368,37 +2368,23 @@ def measure_cphase_multi_gates(leakage_qubits, ramsey_qubits, sweep_points_2d,
 
     if ramsey_phases is None:
         ramsey_phases = np.linspace(0, 2*np.pi, 6)*180/np.pi
-    sp = SweepPoints()
-    sp.add_sweep_parameter(
-        'X90 qb3 2.phase', np.tile(ramsey_phases, 2),
-        'deg', 'Phase, $\\theta$')
-    sp.add_sweep_parameter(
-        'X90 qb4 2.phase', np.tile(ramsey_phases, 2),
-        'deg', 'Phase, $\\theta$')
-    sp.add_sweep_parameter(
-        'X180 qb1 1.amplitude',
-        'lambda sp, amp: amp*np.concatenate([np.ones(len(sp[0]['
-            '"X90 qb3 2.phase"][0])//2), np.zeros(len(sp[0]['
-            '"X90 qb3 2.phase"][0])//2)])',
-        'V', 'Amplitude, $A$')
-    sp.add_sweep_parameter(
-        'X180 qb1 2.amplitude',
-        'lambda sp, amp: amp*np.concatenate([np.ones(len(sp[0]['
-            '"X90 qb3 2.phase"][0])//2), np.zeros(len(sp[0]['
-            '"X90 qb3 2.phase"][0])//2)])',
-        'V', 'Amplitude, $A$')
-    sp.add_sweep_parameter(
-        'X180 qb2 1.amplitude',
-        'lambda sp, amp: amp*np.concatenate([np.ones(len(sp[0]['
-            '"X90 qb4 2.phase"][0])//2), np.zeros(len(sp[0]['
-            '"X90 qb4 2.phase"][0])//2)])',
-        'V', 'Amplitude, $A$')
-    sp.add_sweep_parameter(
-        'X180 qb2 2.amplitude',
-        'lambda sp, amp: amp*np.concatenate([np.ones(len(sp[0]['
-            '"X90 qb4 2.phase"][0])//2), np.zeros(len(sp[0]['
-            '"X90 qb4 2.phase"][0])//2)])',
-        'V', 'Amplitude, $A$')
+    sp = sp_mod.SweepPoints()
+    for qbl, qbr in zip(leakage_qubits, ramsey_qubits):
+        sp.add_sweep_parameter(
+            f'X90 {qbr.name} 2.phase', np.tile(ramsey_phases, 2),
+            'deg', 'Phase, $\\theta$')
+        sp.add_sweep_parameter(
+            f'X180 {qbl.name} 1.amplitude',
+            'lambda sp, amp: amp*np.concatenate([np.ones(len(sp[0]['
+            f'"X90 {qbr.name} 2.phase"][0])//2), np.zeros(len(sp[0]['
+            f'"X90 {qbr.name} 2.phase"][0])//2)])',
+            'V', 'Amplitude, $A$')
+        sp.add_sweep_parameter(
+            f'X180 {qbl.name} 2.amplitude',
+            f'lambda sp, amp: amp*np.concatenate([np.ones(len(sp[0]['
+            f'"X90 {qbr.name} 2.phase"][0])//2), np.zeros(len(sp[0]['
+            f'"X90 {qbr.name} 2.phase"][0])//2)])',
+            'V', 'Amplitude, $A$')
     sp += sweep_points_2d
 
     cal_states = CalibrationPoints.guess_cal_states(cal_states,
@@ -2407,11 +2393,6 @@ def measure_cphase_multi_gates(leakage_qubits, ramsey_qubits, sweep_points_2d,
                                        n_per_state=n_cal_points_per_state)
 
     CB = cb_mod.CircuitBuilder(qubits)
-
-    for qb in qubits:
-        MC = qb.instr_mc.get_instr()
-        qb.prepare(drive='timedomain')
-
     if max_flux_lengths is None:
         cz_durations = {
             CB.get_cz_pulse_name(q1, q2): CB.get_cz_gate_duration(q1, q2, sp)
@@ -2427,21 +2408,25 @@ def measure_cphase_multi_gates(leakage_qubits, ramsey_qubits, sweep_points_2d,
                 'X180 {ql.name}', 'X90s {qr.name}']
     ops = [op.format(ql=ql, qr=qr) for ql, qr in
            zip(leakage_qubits, ramsey_qubits) for op in base_ops]
+    pulses = CB.block_from_ops('B', ops).pulses
     pulse_modifs = {i*len(base_ops): {"ref_pulse": "segment_start"}
                     for i in range(len(ops)//len(base_ops))}
-    pulse_modifs.update({ops.index(czn): {"pulse_delay": d}
-                         for czn, d in cz_durations.items()})
+    pulse_modifs.update({ops.index(czn)+1: {
+        "pulse_delay": d, "ref_pulse": pulses[ops.index(czn)-1]['name']}
+        for czn, d in cz_durations.items()})
     max_dur_idx = np.argmax([
         CB.get_ops_duration(ops[i*len(base_ops): (i+1)*len(base_ops)])
         for i in range(len(ops)//len(base_ops))])
-    ro_ref_pulse = CB.get_pulse(
-        ops[max_dur_idx*len(base_ops): (max_dur_idx+1)*len(base_ops)][-1])[
+    ro_ref_pulse = pulses[max_dur_idx*len(base_ops): (max_dur_idx+1)*len(base_ops)][-1][
         'name']
     sequences, hard_sweep_points, soft_sweep_points = \
         CB.sweep_2d(ops, sp, cp, pulse_modifs=pulse_modifs,
                     ro_kwargs={'ref_pulse': ro_ref_pulse,
-                               'qb_names': ro_qubits})
+                               'qb_names': [qb.name for qb in ro_qubits]})
 
+    for qb in qubits:
+        MC = qb.instr_mc.get_instr()
+        qb.prepare(drive='timedomain')
     hard_sweep_func = awg_swf.SegmentHardSweep(sequence=sequences[0],
                                                upload=upload,
                                                parameter_name='Phase',
@@ -2486,7 +2471,7 @@ def measure_cphase_multi_gates(leakage_qubits, ramsey_qubits, sweep_points_2d,
                          'cal_states_rotations': cal_states_rotations if
                              (len(cal_states) != 0 and not classified) else None,
                          'data_to_fit': data_to_fit,
-                         'sweep_points': sweep_points})
+                         'sweep_points': sp})
     MC.run_2D(label, exp_metadata=exp_metadata)
     if analyze:
         if classified:
