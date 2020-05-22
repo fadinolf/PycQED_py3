@@ -2325,30 +2325,69 @@ def measure_cphase(qbc, qbt, soft_sweep_params, cz_pulse_name,
 
 
 def measure_cphase_multi_gates(leakage_qubits, ramsey_qubits, sweep_points_2d,
-                               ro_qubits=None,
-                               max_flux_lengths=None, num_cz_gates=1,
-                               n_cal_points_per_state=1, cal_states='auto',
-                               prep_params=None, exp_metadata=None, label=None,
-                               analyze=True, upload=True, for_ef=True, **kw):
-    '''
-    method to measure the leakage and the phase acquired during a flux pulse
-    conditioned on the state of the control qubit (self).
+                               ro_qubits=None, max_flux_lengths=None,
+                               num_cz_gates=1, n_cal_points_per_state=1,
+                               cal_states='auto', for_ef=True,
+                               exp_metadata=None, label=None,
+                               analyze=True, upload=True,  **kw):
+    """
+    Measure the leakage and the phase acquired during several CZ gates.
     In this measurement, the phase from two Ramsey type measurements
-    on qb_target is measured, once with the control qubit in the excited state
-    and once in the ground state. The conditional phase is calculated as the
-    difference.
+    on each ramsey_qubits is measured, once with the respective leakage_qubits
+    in the excited state and once in the ground state.
+    The conditional phase is calculated as the difference.
 
-    Args:
-        qbc (QuDev_transmon): control qubit / fluxed qubit
-        qbt (QuDev_transmon): target qubit / non-fluxed qubit
-    '''
-    plot_all_traces = kw.get('plot_all_traces', True)
-    plot_all_probs = kw.get('plot_all_probs', True)
-    classified = kw.get('classified', False)
+    ! The MUX ro happens simultaneously for all qubits, but the pulses are not
+    necessarily simultaneous for the qubits in the cz gates. This depends on
+    The total duration of each cz gate.
+
+    :param leakage_qubits: list of QuDev_transmon instances corresponding to the
+        qubits that go to the |f> state during the cz interaction
+    :param ramsey_qubits: list of QuDev_transmon instances corresponding to the
+        qubits that do NOT go to the |f> state during the cz interaction
+    :param sweep_points_2d: SweepPoints object (list of 1 dict) describing the
+        2d sweep dimension
+    :param ro_qubits: list of QuDev_transmon instances corresponding to the
+        qubits that should be measured. If None, all qubits are measured.
+    :param max_flux_lengths: dict with keys the measured cz pulse names and
+        values the max pulse lengths (without buffers!) of each cz pulse
+    :param num_cz_gates: int indicating the number of cz gates to measure
+    :param n_cal_points_per_state: number of segments for each calibration state
+    :param cal_states: str or tuple of str; the calibration states to measure
+    :param for_ef: bool indicating whether to measure the |f> calibration state
+        for each qubit
+    :param exp_metadata: dict with experimental metadata
+    :param label: str for measurement label
+    :param analyze: bool indicating whether to run analysis or not
+    :param upload: bool indicating whether to upload sequence
+    :param kw: keyword arguments
+        predictive_label (bool; default: False): whether this to indicate in the
+            measurement label that this is a CMAES measurement
+        ramsey_phases (np.ndarray; default: None): the phases 1d sweep points
+            for the Ramsey measurements;
+            FIX ME: (Steph, 22.05.2020) currently the same for all gates
+        classified (bool; default: False): whether to use the
+            UHFQC_classifier_detector (True) or the
+            UHFQC_integrated_average_detector (False)
+        plot_all_traces (bool; default: True): whether to produce the plots
+            with all the individual traces (True), or just the plots of CPhase,
+            Leakage, and PopLoss vs each of the 2d sweep points (False, faster!)
+        plot_all_probs (bool; default: True): if we obtain individual arrays
+            for the probability of each calibration state, whether to make a
+            figure for each of these probabilities. Only applies if
+            classified==True, or if we will use 3 state rotation of averaged
+            data).
+    :return: cphases, population_losses, leakage, analysis object only if
+        analyze==True.
+    """
     predictive_label = kw.pop('predictive_label', False)
     ramsey_phases = kw.pop('ramsey_phases', None)
+    classified = kw.get('classified', False)
+    plot_all_traces = kw.get('plot_all_traces', True)
+    plot_all_probs = kw.get('plot_all_probs', True)
 
     qubits = leakage_qubits + ramsey_qubits
+    CB = cb_mod.CircuitBuilder(qubits)
     if ro_qubits is None:
         ro_qubits = qubits
 
@@ -2359,16 +2398,16 @@ def measure_cphase_multi_gates(leakage_qubits, ramsey_qubits, sweep_points_2d,
             label = 'CPhase_nz_measurement'
         if classified:
             label += '_classified'
-        if 'active' in prep_params['preparation_type']:
-            label += '_reset'
         if num_cz_gates > 1:
             label += f'_{num_cz_gates}_gates'
         label += f'_{"".join([qb.name for qb in leakage_qubits])}_' \
                  f'{"".join([qb.name for qb in ramsey_qubits])}'
 
+    # Create the full SweepPoints object
     if ramsey_phases is None:
         ramsey_phases = np.linspace(0, 2*np.pi, 6)*180/np.pi
-    sp = sp_mod.SweepPoints()
+    # Create the 1d SweepPoints
+    sp = SweepPoints()
     for qbl, qbr in zip(leakage_qubits, ramsey_qubits):
         sp.add_sweep_parameter(
             f'X90 {qbr.name} 2.phase', np.tile(ramsey_phases, 2),
@@ -2385,65 +2424,108 @@ def measure_cphase_multi_gates(leakage_qubits, ramsey_qubits, sweep_points_2d,
             f'"X90 {qbr.name} 2.phase"][0])//2), np.zeros(len(sp[0]['
             f'"X90 {qbr.name} 2.phase"][0])//2)])',
             'V', 'Amplitude, $A$')
-    sp += sweep_points_2d
+    # If num_cz_gates > 1, each CZ gate must have its individual entry in the
+    # 2d SweepPoints. The user provides only one entry per CZ gate, so we need
+    # to add entries
+    sp_2d_temp = deepcopy(sweep_points_2d)
+    for qbl, qbr in zip(leakage_qubits, ramsey_qubits):
+        for sp2d_name in sweep_points_2d[0]:
+            if CB.get_cz_pulse_name(qbl, qbr) in sp2d_name:
+                sp_info = sp_2d_temp[0].pop(sp2d_name)
+                for n in range(num_cz_gates):
+                    sp_2d_temp[0][
+                        f'{CB.get_cz_pulse_name(qbl, qbr)} {n+1}.'
+                        f'{sp2d_name.split(".")[-1]}'] = sp_info
+    sp += sp_2d_temp  # add the 2d SweepPoints to the 1d SweepPoints
 
+    # Create CalibrationPoints
     cal_states = CalibrationPoints.guess_cal_states(cal_states,
                                                     for_ef=for_ef)
     cp = CalibrationPoints.multi_qubit([qb.name for qb in qubits], cal_states,
                                        n_per_state=n_cal_points_per_state)
 
-    CB = cb_mod.CircuitBuilder(qubits)
+    # Get max_flux_lengths
     if max_flux_lengths is None:
+        # If not provided by the user, use CB.get_cz_gate_duration to get
+        # total duration of each CZ gate
         cz_durations = {
-            CB.get_cz_pulse_name(q1, q2): CB.get_cz_gate_duration(q1, q2, sp)
+            CB.get_cz_pulse_name(q1, q2):
+                num_cz_gates*CB.get_max_cz_gate_duration(q1, q2, sp)
             for q1, q2 in zip(leakage_qubits, ramsey_qubits)}
     else:
+        # If provided by the user, then add the buffer lengths and multiply
+        # by num_cz_gates
         cz_durations = {
-            cz_name: p_len +
+            cz_name: num_cz_gates*(p_len +
                      CB.get_pulse(cz_name).get('buffer_length_start', 0) +
-                     CB.get_pulse(cz_name).get('buffer_length_end', 0)
+                     CB.get_pulse(cz_name).get('buffer_length_end', 0))
         for cz_name, p_len in max_flux_lengths.items()}
 
-    base_ops = ['X180 {ql.name}', 'X90s {qr.name}', 'upCZ {qr.name} {ql.name}',
-                'X180 {ql.name}', 'X90s {qr.name}']
-    ops = [op.format(ql=ql, qr=qr) for ql, qr in
+    # Define the list of measurement operations for one CZ gate
+    base_ops = ['X180 {qbl.name}', 'X90s {qbr.name}',
+                'upCZ {qbr.name} {qbl.name}',
+                'X180 {qbl.name}', 'X90s {qbr.name}']
+    # Replace qbl, qbr by the names of qubits in leakage_qubits, ramsey_qubits
+    # len(ops) = len(base_ops) * len(leakage_qubits)
+    ops = [op.format(qbl=qbl, qbr=qbr) for qbl, qbr in
            zip(leakage_qubits, ramsey_qubits) for op in base_ops]
+    # Get the list of NAMED pulses by creating a Block object
     pulses = CB.block_from_ops('B', ops).pulses
+    # Create pulse_modifs
+    # Make sure the base_ops for each CZ gate starts at the segment_start, i.e.
+    # that they start simultaneously
     pulse_modifs = {i*len(base_ops): {"ref_pulse": "segment_start"}
                     for i in range(len(ops)//len(base_ops))}
-    pulse_modifs.update({ops.index(czn)+1: {
+    # Delay the DRAG pulses coming after each last CZ gate by the respective
+    # cz_duration, and reference this DRAG pulse to the DRAG pulse before
+    # the each first CZ gate
+    pulse_modifs.update({ops.index(czn)+num_cz_gates: {
         "pulse_delay": d, "ref_pulse": pulses[ops.index(czn)-1]['name']}
         for czn, d in cz_durations.items()})
+    # Find which pulse the MUX ro must be referenced to. It is not clear which
+    # base_ops (i.e. for which gate) takes longer
+    # Find the base_ops that takes longest by calling CB.get_ops_duration for
+    # each chunk of len(base_ops) in ops. Find the index in ops of the start
+    # of the longest base_ops chunk.
     max_dur_idx = np.argmax([
         CB.get_ops_duration(ops[i*len(base_ops): (i+1)*len(base_ops)])
         for i in range(len(ops)//len(base_ops))])
-    ro_ref_pulse = pulses[max_dur_idx*len(base_ops): (max_dur_idx+1)*len(base_ops)][-1][
-        'name']
+    # Get name of the pulse to which the MUX ro will be referenced
+    ro_ref_pulse = pulses[max_dur_idx*len(base_ops):
+                          (max_dur_idx+1)*len(base_ops)][-1]['name']
+    # Create the sequences, and get hard_sweep_points, soft_sweep_points
+    # using CB.sweep_2d
     sequences, hard_sweep_points, soft_sweep_points = \
         CB.sweep_2d(ops, sp, cp, pulse_modifs=pulse_modifs,
                     ro_kwargs={'ref_pulse': ro_ref_pulse,
                                'qb_names': [qb.name for qb in ro_qubits]})
 
+    # Prepare qubits, get MC
     for qb in qubits:
         MC = qb.instr_mc.get_instr()
         qb.prepare(drive='timedomain')
+    # Create hard sweep function
     hard_sweep_func = awg_swf.SegmentHardSweep(sequence=sequences[0],
                                                upload=upload,
                                                parameter_name='Phase',
                                                unit='deg')
+    # Assign hard sweep function
     MC.set_sweep_function(hard_sweep_func)
+    # Assign hard sweep point
     MC.set_sweep_points(hard_sweep_points)
-
+    # Get AWGs channels of each flux pulse
     channels_to_upload = [
         CB.operation_dict[CB.get_cz_pulse_name(q1, q2)]['channel'] for q1, q2 in
         zip(leakage_qubits, ramsey_qubits)]
+    # Create and assign soft sweep function
     MC.set_sweep_function_2D(awg_swf.SegmentSoftSweep(
         hard_sweep_func, sequences,
         next(iter(sp[1])).split('.')[1],
         sp[1][next(iter(sp[1]))][1],
         channels_to_upload=channels_to_upload))
+    # Assign soft sweep point
     MC.set_sweep_points_2D(soft_sweep_points)
-
+    # Get detector function
     det_get_values_kws = {'classified': classified,
                           'correlated': False,
                           'thresholded': True,
@@ -2452,8 +2534,10 @@ def measure_cphase_multi_gates(leakage_qubits, ramsey_qubits, sweep_points_2d,
     det_func = get_multiplexed_readout_detector_functions(
         ro_qubits, nr_averages=max(qb.acq_averages() for qb in ro_qubits),
         det_get_values_kws=det_get_values_kws)[det_name]
+    # Assign detector function
     MC.set_detector_function(det_func)
 
+    # Create experimental metadata
     if exp_metadata is None:
         exp_metadata = {}
     cal_states_rotations = {qb.name: {'g': 0, 'f': 1} for qb in leakage_qubits}
@@ -2472,7 +2556,9 @@ def measure_cphase_multi_gates(leakage_qubits, ramsey_qubits, sweep_points_2d,
                              (len(cal_states) != 0 and not classified) else None,
                          'data_to_fit': data_to_fit,
                          'sweep_points': sp})
+    # Run measurement
     MC.run_2D(label, exp_metadata=exp_metadata)
+    # Do analysis
     if analyze:
         if classified:
             channel_map = {qb.name: [vn + ' ' +

@@ -50,6 +50,13 @@ class CircuitBuilder:
                 [qb.preparation_params() for qb in qubits])
 
     def get_cz_pulse_name(self, qubit1, qubit2):
+        """
+        Finds the name of the CZ gate between qubit1-qubit2 that exists in
+        self.operation_dict.
+        :param qubit1: QuDev_transmon instance of one of the gate qubits
+        :param qubit2: QuDev_transmon instance of the other gate qubit
+        :return: the CZ gate name
+        """
         if not hasattr(qubit1, '__iter__'):
             qubit1 = qubit1.name
         if not hasattr(qubit2, '__iter__'):
@@ -97,7 +104,23 @@ class CircuitBuilder:
         p['op_code'] = op
         return p
 
-    def get_cz_gate_duration(self, qubit1, qubit2, sweep_points=None):
+    def get_max_cz_gate_duration(self, qubit1, qubit2, sweep_points=None):
+        """
+        Obtain the total duration pulse_length + buffers of the CZ gate
+        between qubit1-qubbit2.
+        :param qubit1: QuDev_transmon instance of one of the gate qubits
+        :param qubit2: QuDev_transmon instance of the other gate qubit
+        :param sweep_points: SweepPoints object. If len(sweep_points) == 1,
+            assumes the keys may contain the pulse name of the CZ gate between
+            qubit1-qubit2. If len(sweep_points) > 1, assumes sweep_points[1] is
+            the ones whose keys may contain the pulse name of the CZ gate
+            between qubit1-qubit2.
+        :return:
+            if sweep_points is None: pulse_length + buffers from the pulse dict
+            else: finds if the pulse_length of the gate is being swept. If yes,
+            then it returns the max length in the swept lengths. If no, then
+            returns pulse_length + buffers from the pulse dict.
+        """
         cz_pulse = self.get_pulse(self.get_cz_pulse_name(qubit1, qubit2))
         if sweep_points is None:
             cz_gate_duration = cz_pulse.get('pulse_length', 0)
@@ -118,6 +141,19 @@ class CircuitBuilder:
 
     def get_ops_duration(self, operations, fill_values=None, pulse_modifs=None,
                          init_state='0'):
+        """
+        Calculates the total duration of the operations by resolving a dummy
+        segment created from operations.
+        :param operations: list of operations (str), which can be preformatted
+            and later filled with values in the dictionary fill_values
+        :param fill_values: optional fill values for operations (dict),
+            see documentation of block_from_ops().
+        :param pulse_modifs: Modification of pulses parameters (dict),
+            see documentation of block_from_ops().
+        :param init_state: initialization state (string or list),
+            see documentation of initialize().
+        :return: the duration of the operations
+        """
         pulses = self.initialize(init_state=init_state).build()
         pulses += self.block_from_ops("Block1", operations,
                                       fill_values=fill_values,
@@ -449,10 +485,12 @@ class CircuitBuilder:
                  fill_values=None, pulse_modifs=None, init_state='0',
                  seq_name='Sequence', ro_kwargs=None, return_segments=False):
         """
-        Returns a sequence or a list of segments with the given operations
-        using the function block_from_ops().
+        Creates a sequence or a list of segments by doing a 1d sweep
+        over the given operations based on the sweep_points.
         :param operations: list of operations (str), which can be preformatted
             and later filled with values in the dictionary fill_values
+        :param sweep_points: SweepPoints object with one sweep dimension
+        :param cal_points: CalibrationPoints object
         :param fill_values: optional fill values for operations (dict),
             see documentation of block_from_ops().
         :param pulse_modifs: Modification of pulses parameters (dict),
@@ -506,10 +544,12 @@ class CircuitBuilder:
                  fill_values=None, pulse_modifs=None, init_state='0',
                  seq_name='Sequence', ro_kwargs=None, return_segments=False):
         """
-        Returns a sequence or a list of segments with the given operations
-        using the function block_from_ops().
+        Creates a sequence or a list of segments by doing a 2d sweep
+        over the given operations based on the sweep_points.
         :param operations: list of operations (str), which can be preformatted
             and later filled with values in the dictionary fill_values
+        :param sweep_points: SweepPoints object with one sweep dimension
+        :param cal_points: CalibrationPoints object
         :param fill_values: optional fill values for operations (dict),
             see documentation of block_from_ops().
         :param pulse_modifs: Modification of pulses parameters (dict),
