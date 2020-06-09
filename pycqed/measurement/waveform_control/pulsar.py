@@ -82,6 +82,14 @@ class UHFQCPulsar:
                                      "memory by repeating specific sequence "
                                      "patterns (eg. readout) passed in "
                                      "'repeat dictionary'")
+        self.add_parameter('{}_enforce_single_element'.format(awg.name),
+                           initial_value=False, vals=vals.Bool(),
+                           parameter_class=ManualParameter,
+                           docstring="Overrides the element names for pulses "
+                                     "played on this AWG to the same value. "
+                                     "Useful for making sure that the "
+                                     "master-AWG has only one waveform per "
+                                     "segment.")
         self.add_parameter('{}_granularity'.format(awg.name),
                            get_cmd=lambda: 16)
         self.add_parameter('{}_element_start_granularity'.format(awg.name),
@@ -353,6 +361,14 @@ class HDAWG8Pulsar:
                                      "memory by repeating specific sequence "
                                      "patterns (eg. readout) passed in "
                                      "'repeat dictionary'")
+        self.add_parameter('{}_enforce_single_element'.format(awg.name),
+                           initial_value=False, vals=vals.Bool(),
+                           parameter_class=ManualParameter,
+                           docstring="Overrides the element names for pulses "
+                                     "played on this AWG to the same value. "
+                                     "Useful for making sure that the "
+                                     "master-AWG has only one waveform per "
+                                     "segment.")
         self.add_parameter('{}_granularity'.format(awg.name),
                            get_cmd=lambda: 16)
         self.add_parameter('{}_element_start_granularity'.format(awg.name),
@@ -681,6 +697,14 @@ class AWG5014Pulsar:
                                      "memory by repeating specific sequence "
                                      "patterns (eg. readout) passed in "
                                      "'repeat dictionary'")
+        self.add_parameter('{}_enforce_single_element'.format(awg.name),
+                           initial_value=False, vals=vals.Bool(),
+                           parameter_class=ManualParameter,
+                           docstring="Overrides the element names for pulses "
+                                     "played on this AWG to the same value. "
+                                     "Useful for making sure that the "
+                                     "master-AWG has only one waveform per "
+                                     "segment.")
         self.add_parameter('{}_granularity'.format(awg.name),
                            get_cmd=lambda: 4)
         self.add_parameter('{}_element_start_granularity'.format(awg.name),

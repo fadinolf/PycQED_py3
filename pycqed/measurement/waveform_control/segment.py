@@ -219,10 +219,10 @@ class Segment:
 
         # adds the resolved pulses to the elements OrderedDictionary
         for (t0, i, p) in sorted(visited_pulses):
-            if p.pulse_obj.element_name not in self.elements:
-                self.elements[p.pulse_obj.element_name] = [p.pulse_obj]
-            elif p.pulse_obj.element_name in self.elements:
-                self.elements[p.pulse_obj.element_name].append(p.pulse_obj)
+            pulse_element = p.pulse_obj.element_name
+            if pulse_element not in self.elements:
+                self.elements[pulse_element] = []
+            self.elements[pulse_element].append(p.pulse_obj)
 
         # sort unresolved_pulses by ascending pulse middle. Used for Z_gate
         # resolution
