@@ -216,7 +216,7 @@ class BaseDataAnalysis(object):
                 'close_figs', False))
 
     @staticmethod
-    def get_hdf_param_value(group, param_name):
+    def get_hdf_datafile_param_value(group, param_name):
         '''
         Returns an attribute "key" of the group "Experimental Data"
         in the hdf5 datafile.
@@ -230,9 +230,44 @@ class BaseDataAnalysis(object):
             s = [s.decode('utf-8') for s in s]
         return s
 
-    def get_param_value(self, param_name, default_value=None):
-        return self.options_dict.get(param_name, self.metadata.get(
-            param_name, default_value))
+    def get_hdf_param_value(self, path_to_group, attribute, hdf_file_index=0):
+        """
+        Gets the attribute (i.e. parameter) of a given group in the hdf file.
+        Args:
+            path_to_group (str): path to group. e.g. "Instrument settings/qb1"
+            attribute: attribute name. e.g. "T1"
+            hdf_file_index: index of the file to use in case of
+                multiple timestamps.
+
+        Returns:
+
+        """
+        h5mode = self.options_dict.get('h5mode', 'r+')
+        folder = a_tools.get_folder(self.timestamps[hdf_file_index])
+        h5filepath = a_tools.measurement_filename(folder)
+        data_file = h5py.File(h5filepath, h5mode)
+
+        try:
+            value = self.get_hdf_datafile_param_value(data_file[path_to_group],
+                                                      attribute)
+            data_file.close()
+            return value
+        except Exception as e:
+            data_file.close()
+            raise e
+
+    def get_param_value(self, param_name, default_value=None, metadata_index=0):
+        # no stored metadata
+        if not hasattr(self, "metadata") or self.metadata is None:
+            return self.options_dict.get(param_name, default_value)
+        # multi timestamp with different metadata
+        elif isinstance(self.metadata, (list, tuple)) and len(self.metadata) != 0:
+            return self.options_dict.get(param_name,
+                self.metadata[metadata_index].get(param_name, default_value))
+        # base case
+        else:
+            return self.options_dict.get(param_name, self.metadata.get(
+                param_name, default_value))
 
     def get_data_from_timestamp_list(self):
         raw_data_dict = []
@@ -262,7 +297,7 @@ class BaseDataAnalysis(object):
                         for group_name in data_file.keys():
                             if par_name in list(data_file[group_name].attrs):
                                 raw_data_dict_ts[save_par] = \
-                                    self.get_hdf_param_value(
+                                    self.get_hdf_datafile_param_value(
                                         data_file[group_name], par_name)
                     else:
                         group_name = '/'.join(file_par.split('.')[:-1])
@@ -270,7 +305,7 @@ class BaseDataAnalysis(object):
                         if group_name in data_file:
                             if par_name in list(data_file[group_name].attrs):
                                 raw_data_dict_ts[save_par] = \
-                                    self.get_hdf_param_value(
+                                    self.get_hdf_datafile_param_value(
                                         data_file[group_name], par_name)
                             elif par_name in list(data_file[group_name].keys()):
                                 raw_data_dict_ts[save_par] = \
@@ -293,7 +328,31 @@ class BaseDataAnalysis(object):
         return raw_data_dict
 
     @staticmethod
-    def add_measured_data(raw_data_dict):
+    def add_measured_data(raw_data_dict, compression_factor=1):
+        """
+        Formats measured data based on the raw data dictionary and the
+        soft and hard sweep points.
+        Args:
+            raw_data_dict (dict): dictionary including raw data, to which the
+                "measured_data" key will be added.
+            compression_factor: compression factor of soft sweep points
+                into hard sweep points for the measurement (for 2D sweeps only).
+                The data will be reshaped such that it appears without the compression
+                in "measured_data".
+                If given, it assumes that hard_sweep_points (hsp) and
+                soft_sweep_points (ssp) are indices rather than parameter values,
+                which can be decompressed without any additional information needed.
+                e.g. a sequences with 5 hsp and 4 ssp could be compressed with a
+                compression factor of 2, which means that 2 sequences corresponding
+                to 2 ssp would be  compressed into one single sequence with 10 hsp,
+                and the measured sequence would therefore have 10 hsp and 2ssp.
+                For the decompression, the data will be reshaped to
+                (10/2, 2*2) = (5, 4) to correspond to the initial soft/hard sweep point
+                sizes.
+
+        Returns:
+
+        """
         if 'measured_data' in raw_data_dict and \
                 'value_names' in raw_data_dict:
             measured_data = raw_data_dict.pop('measured_data')
@@ -305,8 +364,15 @@ class BaseDataAnalysis(object):
 
             sweep_points = measured_data[:-len(value_names)]
             if sweep_points.shape[0] > 1:
-                raw_data_dict['hard_sweep_points'] = np.unique(sweep_points[0])
-                raw_data_dict['soft_sweep_points'] = np.unique(sweep_points[1:])
+                hsp = np.unique(sweep_points[0])
+                ssp = np.unique(sweep_points[1:])
+                # if needed, decompress the data (assumes hsp and ssp are indices)
+                if compression_factor != 1:
+                    hsp = hsp[:int(len(hsp) / compression_factor)]
+                    ssp = np.arange(len(ssp) * compression_factor)
+                raw_data_dict['hard_sweep_points'] = hsp
+                raw_data_dict['soft_sweep_points'] = ssp
+
             else:
                 raw_data_dict['hard_sweep_points'] = np.unique(sweep_points[0])
 
@@ -350,8 +416,6 @@ class BaseDataAnalysis(object):
 
         self.raw_data_dict = self.get_data_from_timestamp_list()
         if len(self.timestamps) == 1:
-            self.raw_data_dict = self.add_measured_data(
-                self.raw_data_dict)
             # the if statement below is needed because if exp_metadata is not
             # found in the hdf file, then it is set to
             # raw_data_dict['exp_metadata'] = [] by the method
@@ -361,16 +425,23 @@ class BaseDataAnalysis(object):
             if len(self.raw_data_dict['exp_metadata']) == 0:
                 self.raw_data_dict['exp_metadata'] = {}
             self.metadata = self.raw_data_dict['exp_metadata']
+            self.raw_data_dict = self.add_measured_data(
+                self.raw_data_dict,
+                self.get_param_value('compression_factor', 1))
         else:
             temp_dict_list = []
-            for i, rd_dict in enumerate(self.raw_data_dict):
-                temp_dict_list.append(
-                    self.add_measured_data(rd_dict))
-                if len(rd_dict['exp_metadata']) == 0:
-                    rd_dict['exp_metadata'] = {}
-            self.raw_data_dict = tuple(temp_dict_list)
-            self.metadata = [rd_dict['exp_metadata'] for
+            self.metadata = [rd['exp_metadata'] for
                              rd in self.raw_data_dict]
+
+            for i, rd_dict in enumerate(self.raw_data_dict):
+                if len(rd_dict['exp_metadata']) == 0:
+                    self.metadata[i] = {}
+                temp_dict_list.append(
+                    self.add_measured_data(
+                        rd_dict,
+                        self.get_param_value('compression_factor', 1, i)))
+            self.raw_data_dict = tuple(temp_dict_list)
+
 
     def process_data(self):
         """

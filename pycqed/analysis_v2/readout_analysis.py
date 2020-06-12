@@ -10,9 +10,9 @@ Originally written by Adriaan, updated/rewritten by Rene May 2018
 import itertools
 import logging
 log = logging.getLogger(__name__)
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from copy import deepcopy
-
+from pycqed.measurement.calibration_points import CalibrationPoints
 import lmfit
 import matplotlib.colors as mc
 import matplotlib.pyplot as plt
@@ -882,27 +882,7 @@ class Singleshot_Readout_Analysis_Qutrit(ba.BaseDataAnalysis):
         params = dict()
 
         if method == 'ncc':
-            class NCC:
-                def __init__(self, cluster_centers):
-                    """
-                    cluster_centers is a dict of cluster centers
-                    (name as key, n dimensional array as value)
-
-                    """
-                    self.cluster_centers = cluster_centers
-                def predict(self, X):
-                    pred_states = []
-                    for pt in X:
-                        dist = []
-                        for _, cluster_center in self.cluster_centers.items():
-                            dist.append(np.linalg.norm(pt - cluster_center))
-                        dist = np.asarray(dist)
-                        pred_states.append(np.argmin(dist))
-                    pred_states = np.array(pred_states)
-                    return pred_states
-                def predict_proba(self, X):
-                    raise NotImplementedError("Not implemented for NCC")
-            ncc = NCC(self.proc_data_dict['analysis_params']['mu'])
+            ncc = self.NCC(self.proc_data_dict['analysis_params']['mu'])
             pred_states = ncc.predict(X)
             self.clf_ = ncc
             return pred_states, dict()
@@ -919,27 +899,8 @@ class Singleshot_Readout_Analysis_Qutrit(ba.BaseDataAnalysis):
             gm.fit(X)
             pred_states = np.argmax(gm.predict_proba(X), axis=1)
 
-            if cov_type == "tied":
-                # in case all components share the same cov mtx return a list
-                # of identical cov matrices
-                covs = [gm.covariances_ for _ in range(gm.n_components)]
-            elif cov_type == "full":
-                # already of the right shape (n_comp, n_features, n_features)
-                covs = gm.covariances_
-            elif cov_type == "spherical":
-                # return list of sigma_i^2 * I instead of list of sigma_i^2
-                covs = [np.diag([gm.covariances_[i]
-                                 for _ in range(X.shape[1])])
-                        for i in range(gm.n_components)]
-            elif cov_type == "diag":
-                # make covariance matrices from diagonals
-                covs = [np.diag(gm.covariances_[i])
-                            for i in range(gm.n_components)]
-            else:
-                raise ValueError("covariance type: {} is not supported"
-                                 .format(cov_type))
             params['means_'] = gm.means_
-            params['covariances_'] = gm.covariances_ #covs
+            params['covariances_'] = gm.covariances_
             params['covariance_type'] = gm.covariance_type
             params['weights_'] = gm.weights_
             params['precisions_cholesky_'] = gm.precisions_cholesky_
@@ -975,7 +936,6 @@ class Singleshot_Readout_Analysis_Qutrit(ba.BaseDataAnalysis):
                                       .format(method, ['ncc', 'gmm',
                                                        'threshold']))
 
-
     @staticmethod
     def fidelity_matrix(prep_states, pred_states, levels=('g', 'e', 'f'),
                         plot=False, normalize=True):
@@ -990,7 +950,7 @@ class Singleshot_Readout_Analysis_Qutrit(ba.BaseDataAnalysis):
     @staticmethod
     def plot_fidelity_matrix(fm, target_names,
                              title="State Assignment Probability Matrix",
-                             auto_shot_info=True,
+                             auto_shot_info=True, ax=None,
                              cmap=None, normalize=True, show=False):
         fidelity_avg = np.trace(fm) / float(np.sum(fm))
         if auto_shot_info:
@@ -998,7 +958,10 @@ class Singleshot_Readout_Analysis_Qutrit(ba.BaseDataAnalysis):
         if cmap is None:
             cmap = plt.get_cmap('Reds')
 
-        fig, ax = plt.subplots(1, figsize=(8, 6))
+        if ax is None:
+            fig, ax = plt.subplots(1, figsize=(8, 6))
+        else:
+            fig = ax.get_figure()
 
         if normalize:
             fm = fm.astype('float') / fm.sum(axis=1)[:, np.newaxis]
@@ -1006,7 +969,8 @@ class Singleshot_Readout_Analysis_Qutrit(ba.BaseDataAnalysis):
         im = ax.imshow(fm, interpolation='nearest', cmap=cmap,
                        norm=mc.LogNorm(), vmin=5e-3, vmax=1.)
         ax.set_title(title)
-        fig.colorbar(im)
+        cb = fig.colorbar(im)
+        cb.set_label('Assignment Probability, $P_{ij}$')
 
         if target_names is not None:
             tick_marks = np.arange(len(target_names))
@@ -1032,7 +996,6 @@ class Singleshot_Readout_Analysis_Qutrit(ba.BaseDataAnalysis):
         if show:
             plt.show()
         return fig
-
 
     @staticmethod
     def _extract_tree_info(tree_clf, class_names=None):
@@ -1122,35 +1085,50 @@ class Singleshot_Readout_Analysis_Qutrit(ba.BaseDataAnalysis):
         if kwargs.get("fig", None) is None:
             fig, axes = plt.subplots(figsize=(10, 8))
             kwargs['fig'] = fig
-
+        colors = kwargs.get('colors', [None] * len(np.unique(y_true)))
         gs = gridspec.GridSpec(2, 2, width_ratios=[3, 1], height_ratios=[1, 4],
                                figure=kwargs['fig'])
 
         # Create scatter plot
         ax = plt.subplot(gs[1, 0])
-        for yval in np.unique(y_true):
+        for yval, c in zip(np.unique(y_true), colors):
             ax.scatter(data[:, 0][y_true == yval], data[:, 1][y_true == yval],
-                       alpha=kwargs.get('alpha', 0.6), marker='.',
+                       alpha=kwargs.get('alpha', 0.6), marker='.', c=c,
                        label=kwargs.get("legend_labels",
                                         [yval] * len(np.unique(y_true)))[int(yval)])
-        #h, labels = sc.legend_elements()
-        #legend = ax.legend(h, kwargs.get("legend_labels", labels))
-        #ax.add_artist(legend)
+        # h, labels = sc.legend_elements()
+        # legend = ax.legend(h, kwargs.get("legend_labels", labels))
+        # ax.add_artist(legend)
         # Create Y-marginal (right)
-        axr = plt.subplot(gs[1, 1], sharey=ax, frameon=False)
-        for yval in np.unique(y_true):
-            axr.hist(data[:, 1][y_true == yval], bins=50,
+        axr = plt.subplot(gs[1, 1], sharey=ax, frameon=kwargs.get('frameon', True))
+        binr_range = (data[:, 1].min(), data[:, 1].max())
+        for yval, c in zip(np.unique(y_true), colors):
+            axr.hist(data[:, 1][y_true == yval], bins=50, color=c,
+                     range=binr_range,
                      orientation='horizontal', density=False,
                      alpha=kwargs.get('alpha', 0.6))
-        axr.set_xscale(kwargs.get("scale", "log"))
+        axr.set_xscale(kwargs.get("scale", "linear"))
+        axr.set_xlabel("Counts")
+        axr.spines["top"].set_visible(False)
+        axr.spines["right"].set_visible(False)
+        axr.yaxis.set_tick_params(right=False)
+        axr.xaxis.set_tick_params(right=False, top=False)
+
         plt.setp(axr.get_yticklabels(), visible=False)
 
         # Create X-marginal (top)
-        axt = plt.subplot(gs[0, 0], sharex=ax, frameon=False)
+        axt = plt.subplot(gs[0, 0], sharex=ax, frameon=kwargs.get('frameon', True))
+        axt.spines["top"].set_visible(False)
+        axt.spines["right"].set_visible(False)
+        axt.yaxis.set_tick_params(right=False, top=False)
+        axt.xaxis.set_tick_params(right=False, top=False)
+        bint_range = (data[:, 0].min(), data[:, 0].max())
+        axt.set_ylabel("Counts")
         plt.setp(axt.get_xticklabels(), visible=False)
 
-        for yval in np.unique(y_true):
-            axt.hist(data[:, 0][y_true == yval], bins=50,
+        for yval, c in zip(np.unique(y_true), colors):
+            axt.hist(data[:, 0][y_true == yval], bins=50, color=c,
+                     range=bint_range,
                      orientation='vertical', density=False,
                      alpha=kwargs.get('alpha', 0.6))
         axt.set_yscale(kwargs.get("scale", "log"))
@@ -1183,7 +1161,7 @@ class Singleshot_Readout_Analysis_Qutrit(ba.BaseDataAnalysis):
             x_min, x_max = x.min() - margin_x, x.max() + margin_x
             y_min, y_max = y.min() - margin_y, y.max() + margin_y
             if h is None:
-                h = 0.01*(x_max - x_min)
+                h = 0.01 * (x_max - x_min)
             xx, yy = np.meshgrid(np.arange(x_min, x_max, h),
                                  np.arange(y_min, y_max, h))
             return xx, yy
@@ -1231,8 +1209,8 @@ class Singleshot_Readout_Analysis_Qutrit(ba.BaseDataAnalysis):
         pearson = cov[0, 1] / np.sqrt(cov[0, 0] * cov[1, 1])
         # Using a special case to obtain the eigenvalues of this
         # two-dimensionl dataset.
-        ell_radius_x = 1#np.sqrt(1 + pearson)
-        ell_radius_y = 1# np.sqrt(1 - pearson)
+        ell_radius_x = np.sqrt(1 + pearson)
+        ell_radius_y = np.sqrt(1 - pearson)
 
         ellipse = Ellipse((0, 0),
                           width=ell_radius_x * 2,
@@ -1257,6 +1235,42 @@ class Singleshot_Readout_Analysis_Qutrit(ba.BaseDataAnalysis):
 
         ellipse.set_transform(transf + ax.transData)
         return ax.add_patch(ellipse)
+
+    @staticmethod
+    def _get_covariances(gmm, cov_type=None):
+        """
+        Retrieves covariences matrices of each mixture component of GMM
+        depending on the fitting procedure (cov_type)
+        Args:
+            gmm:
+            cov_type:
+
+        Returns:
+
+        """
+        if cov_type is None:
+            cov_type = gmm.covariance_type
+
+        if cov_type == "tied":
+            # in case all components share the same cov mtx return a list
+            # of identical cov matrices
+            covs = [gmm.covariances_ for _ in range(gmm.n_components)]
+        elif cov_type == "full":
+            # already of the right shape (n_comp, n_features, n_features)
+            covs = gmm.covariances_
+        elif cov_type == "spherical":
+            # return list of sigma_i^2 * I instead of list of sigma_i^2
+            covs = [np.diag([gmm.covariances_[i]
+                             for _ in range(gmm.means_.shape[1])])
+                    for i in range(gmm.n_components)]
+        elif cov_type == "diag":
+            # make covariance matrices from diagonals
+            covs = [np.diag(gmm.covariances_[i])
+                    for i in range(gmm.n_components)]
+        else:
+            raise ValueError("covariance type: {} is not supported"
+                             .format(cov_type))
+        return covs
 
     def prepare_plots(self):
         cmap = plt.get_cmap('tab10')
@@ -1293,12 +1307,21 @@ class Singleshot_Readout_Analysis_Qutrit(ba.BaseDataAnalysis):
             plt_fn = {0: main_ax.axvline, 1: main_ax.axhline}
             thresholds = self.proc_data_dict['analysis_params'][
                 'classifier_params'].get("thresholds", dict())
+            mapping = self.proc_data_dict['analysis_params'][
+                'classifier_params'].get("mapping", dict())
             for k, thres in thresholds.items():
                 plt_fn[k](thres, linewidth=2,
                           label="threshold i.u. {}: {:.5f}".format(k, thres),
                           color='k', linestyle="--")
                 main_ax.legend(loc=[0.2,-0.62])
 
+            ax_frac = {0: (0.07, 0.1),  # locations for codewords
+                       1: (0.83, 0.1),
+                       2: (0.07, 0.9),
+                       3: (0.83, 0.9)}
+            for cw, state in mapping.items():
+                main_ax.annotate("0b{:02b}".format(cw) + f":{state}",
+                                 ax_frac[cw], xycoords='axes fraction')
             self.figs['{}_classifier_{}'.format(self.classif_method, dk)] = fig
         if show:
             plt.show()
@@ -1326,6 +1349,28 @@ class Singleshot_Readout_Analysis_Qutrit(ba.BaseDataAnalysis):
             fig_key = 'state_prob_matrix_masked_{}'.format(self.classif_method)
             self.figs[fig_key] = fig
 
+    class NCC:
+        def __init__(self, cluster_centers):
+            """
+            cluster_centers is a dict of cluster centers
+            (name as key, n dimensional array as value)
+
+            """
+            self.cluster_centers = cluster_centers
+
+        def predict(self, X):
+            pred_states = []
+            for pt in X:
+                dist = []
+                for _, cluster_center in self.cluster_centers.items():
+                    dist.append(np.linalg.norm(pt - cluster_center))
+                dist = np.asarray(dist)
+                pred_states.append(np.argmin(dist))
+            pred_states = np.array(pred_states)
+            return pred_states
+
+        def predict_proba(self, X):
+            raise NotImplementedError("Not implemented for NCC")
 
 class MultiQubit_SingleShot_Analysis(ba.BaseDataAnalysis):
     """
@@ -1340,14 +1385,18 @@ class MultiQubit_SingleShot_Analysis(ba.BaseDataAnalysis):
             readouts for a single readout then n_readouts has to include them.
         channel_map: dictionary with qubit names as keys and channel channel
             names as values.
-        thresholds: dictionary with qubit names as keys and threshold values as
-            values.
+
     Optional options in the options_dict:
         observables: Dictionary with observable names as a key and observable
             as a value. Observable is a dictionary with name of the qubit as
-            key and boolean value indicating if it is selecting exited states.
+            key and boolean value indicating if it is selecting excited states.
             If the qubit is missing from the list of states it is averaged out.
         readout_names: used as y-axis labels for the default figure
+        thresholds: dictionary with qubit names as keys and threshold values as
+            values. If not specified, 'shots_thresholded' must be passed in.
+        shots_thresholded (dict): single shots thresholded keyed by qubit name.
+        shot_filter: 1D boolean array: filters the shots before averaging
+            (eg. to remove f-level detected states)
     """
 
     def __init__(self, t_start: str=None, t_stop: str=None,
@@ -1362,17 +1411,53 @@ class MultiQubit_SingleShot_Analysis(ba.BaseDataAnalysis):
 
         self.n_readouts = options_dict['n_readouts']
         self.kept_shots = 0
-        self.thresholds = options_dict['thresholds']
-        self.channel_map = options_dict['channel_map']
-        self.use_preselection = options_dict.get('use_preselection', False)
-        qubits = list(self.channel_map.keys())
+        self.thresholds = options_dict.get('thresholds', None)
 
-        self.readout_names = options_dict.get('readout_names', None)
+        if self.thresholds is None and \
+            self.options_dict.get('shots_thresholded', None) is None:
+            raise ValueError("Must provide 'shots_thresholded' in options_dict"
+                             "if no thresholds are provided")
+        self.channel_map = self.options_dict.get('channel_map', None)
+
+        self.single_timestamp = False
+
+        self.params_dict = {
+            'measurementstring': 'measurementstring',
+            'measured_values': 'measured_values',
+            'value_names': 'value_names',
+            'value_units': 'value_units'}
+
+        self.numeric_params = []
+        if auto:
+            self.run_analysis()
+
+    def extract_data(self):
+        super().extract_data()
+        self.metadata = self.raw_data_dict.get('exp_metadata', [])
+        if len(self.metadata) == 0:
+            self.metadata = {}
+        if self.channel_map is None:
+            assert self.options_dict.get("qb_names", None) is not None, \
+                "qb_names should be specified in options_dict" \
+                "if the channel map is not specified"
+            value_names = self.raw_data_dict['value_names']
+            if 'w' in value_names[0]:
+                self.channel_map = a_tools.get_qb_channel_map_from_hdf(
+                    self.get_param_value('qb_names'), value_names=value_names,
+                    file_path=self.raw_data_dict['folder'])
+            else:
+                self.channel_map = {}
+                for qbn in self.get_param_value('qb_names'):
+                    self.channel_map[qbn] = value_names
+        qubits = list(self.channel_map.keys())
+        self.use_preselection = self.get_param_value('use_preselection', False)
+
+        self.readout_names = self.get_param_value('readout_names', None)
         if self.readout_names is None:
             # TODO Default values should come from the MC parameters
-            None
+            pass
 
-        self.observables = options_dict.get('observables', None)
+        self.observables = self.get_param_value('observables', None)
 
         if self.observables is None:
             combination_list = list(itertools.product([False, True],
@@ -1396,39 +1481,29 @@ class MultiQubit_SingleShot_Analysis(ba.BaseDataAnalysis):
                 if self.use_preselection:
                     self.observables[obs_name].update(preselection_condition)
 
-        self.single_timestamp = False
-
-        self.params_dict = {
-            'measurementstring': 'measurementstring',
-            'measured_values': 'measured_values',
-            'value_names': 'value_names',
-            'value_units': 'value_units'}
-
-        self.numeric_params = []
-        if auto:
-            self.run_analysis()
-
     def process_data(self):
         shots_thresh = {}
         logging.info("Loading from file")
+        if self.thresholds is not None:
+            for qubit, channel in self.channel_map.items():
+                shots_cont = np.array(
+                    self.raw_data_dict['measured_data'][channel])
+                shots_thresh[qubit] = (shots_cont > self.thresholds[qubit])
+            self.proc_data_dict['shots_thresholded'] = shots_thresh
+        else:
+            shots_thresh = self.get_param_value('shots_thresholded')
+            self.proc_data_dict['shots_thresholded'] = shots_thresh
 
-        for qubit, channel in self.channel_map.items():
-            shots_cont = np.array(
-                self.raw_data_dict['measured_data'][channel])
-
-            shots_thresh[qubit] = (shots_cont > self.thresholds[qubit])
-        self.proc_data_dict['shots_thresholded'] = shots_thresh
 
         logging.info("Calculating observables")
         self.proc_data_dict['probability_table'] = self.probability_table(
                 shots_thresh,
                 list(self.observables.values()),
-                self.n_readouts
-        )
+                self.n_readouts, self.get_param_value("shot_filter", None))
 
 
     @staticmethod
-    def probability_table(shots_of_qubits, observables, n_readouts):
+    def probability_table(shots_of_qubits, observables, n_readouts, filter=None):
         """
         Creates a general table of counts averaging out all but specified set of
         correlations.
@@ -1452,6 +1527,7 @@ class MultiQubit_SingleShot_Analysis(ba.BaseDataAnalysis):
                 includes preselection readout results or if there was several
                 readouts for a single readout then n_readouts has to include
                 them.
+            filter (array): boolean 1D array which optionally filters the shots.
         Returns:
             np.array: counts with
                 dimensions (n_readouts, len(states_to_be_counted))
@@ -1459,10 +1535,10 @@ class MultiQubit_SingleShot_Analysis(ba.BaseDataAnalysis):
 
         res_e = {}
         res_g = {}
-
-
         n_shots = next(iter(shots_of_qubits.values())).shape[0]
 
+        if filter is not None:
+            filter = filter.reshape((n_readouts, -1), order='F')
         table = np.zeros((n_readouts, len(observables)))
 
 
@@ -1485,11 +1561,17 @@ class MultiQubit_SingleShot_Analysis(ba.BaseDataAnalysis):
                     else:
                         seg = readout_n
                     if state:
-                        mask = np.logical_and(mask, res_e[qubit][seg])
+                        res = res_e[qubit][seg]
                     else:
-                        mask = np.logical_and(mask, res_g[qubit][seg])
-                table[readout_n, state_n] = np.count_nonzero(mask)
-        return table*n_readouts/n_shots
+                        res = res_g[qubit][seg]
+                    # optionally filter shots
+                    if filter is not None:
+                        res = np.logical_and(res, filter[seg])
+                        mask = np.logical_and(mask, filter[seg])
+                    mask = np.logical_and(mask, res)
+
+                table[readout_n, state_n] = np.count_nonzero(mask) / np.count_nonzero(filter[seg])
+        return table
 
     @staticmethod
     def observable_product(*observables):
@@ -1600,7 +1682,7 @@ class MultiQubit_SingleShot_Analysis(ba.BaseDataAnalysis):
         d = 2**len(tomography_qubits)
         data = self.proc_data_dict['probability_table']
         data = data.T[observabele_idxs]
-        if not 'cal_points' in self.options_dict:
+        if self.get_param_value('cal_points') is None:
             Fsingle = {None: np.array([[1, 0], [0, 1]]),
                        True: np.array([[0, 0], [0, 1]]),
                        False: np.array([[1, 0], [0, 0]])}
@@ -1638,15 +1720,15 @@ class MultiQubit_SingleShot_Analysis(ba.BaseDataAnalysis):
         observabele_idxs = [i for i in range(len(self.observables))
                             if i != preselection_obs_idx]
 
-        # calculate the mean for each reference state and each observable
+        # value_names
         try:
             cal_points_list = convert_channel_names_to_index(
                 self.options_dict.get('cal_points'), self.n_readouts,
                 self.raw_data_dict['value_names']
             )
-        except KeyError:
+        except (KeyError, ValueError):
             cal_points_list = convert_channel_names_to_index(
-                self.options_dict.get('cal_points'), self.n_readouts,
+                self.get_param_value('cal_points'), self.n_readouts,
                 list(self.channel_map.keys())
             )
         self.proc_data_dict['cal_points_list'] = cal_points_list
@@ -1687,7 +1769,7 @@ class MultiQubit_SingleShot_Analysis(ba.BaseDataAnalysis):
                     prod_obss.append(obsp)
         prod_prob_table = self.probability_table(
             self.proc_data_dict['shots_thresholded'],
-            prod_obss, self.n_readouts)
+            prod_obss, self.n_readouts, self.get_param_value("shot_filter", None))
         for (i, j), k in prod_obs_idxs.items():
             obs_products[:, i, j] = prod_prob_table[:, k]
         covars = -np.array([np.outer(ro, ro) for ro in self.proc_data_dict[
@@ -1923,11 +2005,8 @@ class Multiplexed_Readout_Analysis(MultiQubit_SingleShot_Analysis):
             self.proc_data_dict['cross_fidelity_matrix'] = \
                 self.cross_fidelity_matrix(table_norm, len(self.channel_map))
             self.save_processed_data('cross_fidelity_matrix')
-        # self.proc_data_dict['cross_correlations_matrix'] = \
-        #     self.cross_correlations_matrix()
-
-        self.save_processed_data('probability_table')
-        self.save_processed_data('probability_table_data_only')
+        self.save_processed_data('probability_table', overwrite=False)
+        self.save_processed_data('probability_table_data_only', overwrite=False)
 
     @staticmethod
     def cross_fidelity_matrix(table_norm, n_qubits):
@@ -1978,7 +2057,8 @@ class Multiplexed_Readout_Analysis(MultiQubit_SingleShot_Analysis):
         return C
 
 
-def convert_channel_names_to_index(cal_points, nr_segments, value_names):
+def convert_channel_names_to_index(cal_points, nr_segments, value_names,
+                                   n_reset_reps=0):
     """
     Converts the calibration points list from the format
     cal_points = [{'ch1': [-4, -3], 'ch2': [-4, -3]},
@@ -1988,16 +2068,43 @@ def convert_channel_names_to_index(cal_points, nr_segments, value_names):
                        [[98, 99], [98, 99]]]
 
     Args:
-        cal_points: the list of calibration points to convert
+        cal_points: Calibration point object or
+            the list of calibration points to convert
         nr_segments: number of segments in the dataset to convert negative
                      indices to positive indices.
         value_names: a list of channel names that is used to determine the
                      index of the channels
+        n_reset_reps: number of reset repetitions in case active reset is used.
+            Ensures the correct indices are taken in that case
     Returns:
         cal_points_list in the converted format
     """
     
     cal_points_list = []
+    try:
+        cp = CalibrationPoints.from_string(cal_points)
+        if len(np.unique(cp.states, axis=1)) < len(cp.states):
+            raise NotImplementedError(
+                "Implementation right now assumes unique calibration point "
+                f"states but identical cal point states were found in:"
+                f" {cp.states}. Modify the way indices are retrived below to "
+                f"extend functionality")
+        # assumes cal_points were performed on all qubits and all combinations,
+        # with  unique cal point segments
+        # eg. for two qubits: [(g,g), (g,e), (e,g), (e,e)] where each entry
+        # in the list is a calibration segment
+        cp_idx = {s: {qbn: [(-len(cp.states) + i) * (1 + n_reset_reps) + n_reset_reps]
+                      for qbn in cp.qb_names}
+                  for i, s in enumerate(cp.states)}
+        log.info(f"Cal_point indices: {cp_idx}")
+        cal_points = list(cp_idx.values())
+
+    except (AttributeError, TypeError) as e:
+        log.warning("Deprecated way of passing cal_points. "
+                    "It should be a calibration point object. "
+                    "Please adapt your experimental metadata and/or analysis "
+                    "options. Computing cal_point indices using the old way...")
+
     for observable in cal_points:
         if isinstance(observable, (list, np.ndarray)):
             observable_list = [[]] * len(value_names)
@@ -2010,7 +2117,7 @@ def convert_channel_names_to_index(cal_points, nr_segments, value_names):
             for channel, idxs in observable.items():
                 if isinstance(channel, int):
                     observable_list[channel] = \
-                        [idx % nr_segments for idx in idxs]
+                        [np.array(idx) % nr_segments for idx in idxs]
                 else:  # assume str
                     ch_idx = value_names.index(channel)
                     observable_list[ch_idx] = \
